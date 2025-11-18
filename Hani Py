@@ -1,0 +1,226 @@
+# KCW_Team_42.py
+# Team 42 - EPITA MSc - Battle of Heuristics Challenge Week 2025
+# Members: Alice Dupont, Bob Martin, Charlie Durand
+# Strategy: Greedy portrait pairing + Sort by tag count (ascending) + fallback random projection
+
+import sys
+import time
+import random
+from collections import defaultdict
+import argparse
+
+# For scoring (uncomment when you have score_checker.py)
+# from score_checker import compute_score
+
+# ================================================================
+# 1. DATA STRUCTURES
+# ================================================================
+
+class Painting:
+    def __init__(self, id, orientation, tags):
+        self.id = id
+        self.orientation = orientation  # 'L' or 'P'
+        self.tags = set(tags)           # set for fast union/intersection
+
+class Frameglass:
+    def __init__(self, paintings):
+        self.paintings = paintings          # list of 1 or 2 Painting objects
+        self.tag_set = set()
+        for p in paintings:
+            self.tag_set.update(p.tags)
+        self.tag_count = len(self.tag_set)
+        self.is_pair = len(paintings) == 2
+        self.repr = f"{paintings[0].id} {paintings[1].id}" if self.is_pair else str(paintings[0].id)
+
+    def __repr__(self):
+        return self.repr
+
+# ================================================================
+# 2. INPUT PARSING
+# ================================================================
+
+def parse_input(filename):
+    paintings = []
+    with open(filename, 'r') as f:
+        lines = f.readlines()
+    
+    n = int(lines[0].strip())
+    for i in range(1, n + 1):
+        parts = lines[i].strip().split()
+        orientation = parts[0]
+        tag_count = int(parts[1])
+        tags = parts[2:2 + tag_count]
+        paintings.append(Painting(i - 1, orientation, tags))  # ID from 0 to N-1
+    
+    print(f"Parsed {len(paintings)} paintings from {filename}")
+    return paintings
+
+# ================================================================
+# 3. PORTRAIT PAIRING HEURISTIC (Greedy by shared tags)
+# ================================================================
+
+def pair_portraits_greedy(portraits):
+    if len(portraits) < 2:
+        return []  # no pairs possible
+
+    # Sort portraits by number of tags descending (richer first)
+    portraits.sort(key=lambda p: len(p.tags), reverse=True)
+
+    pairs = []
+    used = [False] * len(portraits)
+
+    for i in range(len(portraits)):
+        if used[i]:
+            continue
+        best_j = -1
+        best_shared = -1
+
+        for j in range(i + 1, len(portraits)):
+            if used[j]:
+                continue
+            shared = len(portraits[i].tags & portraits[j].tags)
+            if shared > best_shared:
+                best_shared = shared
+                best_j = j
+
+        if best_j != -1 and best_shared > 0:  # only pair if they share at least 1 tag
+            pairs.append((portraits[i], portraits[best_j]))
+            used[i] = True
+            used[best_j] = True
+        # else: leave unpaired (will be treated as single? No — rule says max 2, but we can leave some unpaired)
+
+    # Add remaining unpaired portraits as single frameglasses later
+    return pairs
+
+# ================================================================
+# 4. BUILD FRAMEGLASSES
+# ================================================================
+
+def build_frameglasses(paintings):
+    landscapes = [p for p in paintings if p.orientation == 'L']
+    portraits = [p for p in paintings if p.orientation == 'P']
+
+    print(f"{len(landscapes)} Landscapes, {len(portraits)} Portraits")
+
+    # Pair portraits greedily
+    portrait_pairs = pair_portraits_greedy(portraits)
+    print(f"Created {len(portrait_pairs)} portrait pairs")
+
+    frameglasses = []
+
+    # Add paired portraits
+    for p1, p2 in portrait_pairs:
+        frameglasses.append(Frameglass([p1, p2]))
+
+    # Add leftover portraits (each in their own frameglass — allowed? Wait — NO!)
+    # According to rules: Portraits MUST be in pairs or... wait — actually the rules allow unpaired?
+    # Re-reading: "Each frameglass contains one Landscape painting or two Portrait paintings."
+    # → Unpaired portraits CANNOT be shown! We must either pair them or discard them!
+    # But in example, all are used. But N<=1e5 → we probably want to maximize usage.
+
+    # So: pair as many as possible, discard the odd one if any
+    used_portrait_ids = set()
+    for p1, p2 in portrait_pairs:
+        used_portrait_ids.add(p1.id)
+        used_portrait_ids.add(p2.id)
+
+    unpaired_portraits = [p for p in portraits if p.id not in used_portrait_ids]
+
+    # Try to pair leftovers randomly or just drop the last one
+    random.shuffle(unpaired_portraits)
+    for i in range(0, len(unpaired_portraits) - 1, 2):
+        frameglasses.append(Frameglass([unpaired_portraits[i], unpaired_portraits[i+1]]))
+
+    if len(unpaired_portraits) % 2 == 1:
+        print(f"Warning: Dropped 1 unpaired portrait (ID {unpaired_portraits[-1].id})")
+
+    # Add all landscapes (each alone)
+    for L in landscapes:
+        frameglasses.append(Frameglass([L]))
+
+    print(f"Total frameglasses: {len(frameglasses)}")
+    return frameglasses
+
+# ================================================================
+# 5. ORDERING HEURISTICS
+# ================================================================
+
+def order_by_tag_count(frameglasses):
+    # Classic strong heuristic: sort by number of unique tags (ascending or descending)
+    # Ascending often better for smooth transitions
+    frameglasses.sort(key=lambda f: f.tag_count)
+    return frameglasses
+
+def order_by_random_projection(frameglasses, seed=42):
+    # Project tag sets into 1D using random 64-bit hashes → smooth order in Hamming space
+    random.seed(seed)
+    tag_to_rand = defaultdict(lambda: random.getrandbits(64))
+
+    def project(f):
+        val = 0
+        for tag in f.tag_set:
+            val ^= tag_to_rand[tag]
+        return val
+
+    frameglasses.sort(key=project)
+    return frameglasses
+
+# ================================================================
+# 6. OUTPUT GENERATION
+# ================================================================
+
+def write_output(frameglasses, output_filename):
+    with open(output_filename, 'w') as f:
+        f.write(f"{len(frameglasses)}\n")
+        for fg in frameglasses:
+            if len(fg.paintings) == 2:
+                ids = sorted([p.id for p in fg.paintings])  # optional: sort IDs
+                f.write(f"{ids[0]} {ids[1]}\n")
+            else:
+                f.write(f"{fg.paintings[0].id}\n")
+    print(f"Output written to {output_filename}")
+
+# ================================================================
+# 7. MAIN + SCORING (optional)
+# ================================================================
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input_file", help="Path to input file (e.g. Data/0_example.txt)")
+    parser.add_argument("--output", "-o", default=None, help="Output file (default: input name + .out)")
+    parser.add_argument("--strategy", choices=["tagcount", "randomproj"], default="tagcount")
+    args = parser.parse_args()
+
+    input_file = args.input_file
+    if args.output is None:
+        output_file = input_file.replace(".txt", ".out")
+    else:
+        output_file = args.output
+
+    start_time = time.time()
+
+    paintings = parse_input(input_file)
+    frameglasses = build_frameglasses(paintings)
+
+    # Choose ordering strategy
+    if args.strategy == "randomproj":
+        print("Using random projection ordering...")
+        frameglasses = order_by_random_projection(frameglasses, seed=12345)
+    else:
+        print("Using sort by tag count (ascending)...")
+        frameglasses = order_by_tag_count(frameglasses)
+
+    write_output(frameglasses, output_file)
+
+    # Optional: self-score
+    # try:
+    #     score = compute_score(input_file, output_file)
+    #     print(f"Global Robotic Satisfaction: {score}")
+    # except:
+    #     print("score_checker.py not available — skipping scoring")
+
+    elapsed = time.time() - start_time
+    print(f"Total time: {elapsed:.2f} seconds")
+
+if __name__ == "__main__":
+    main()
