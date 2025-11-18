@@ -1,408 +1,214 @@
-#!/usr/bin/env python3
-"""
-KCW_Team_XX.py
+import time
+import random
+import sys
 
-Team: XX   <-- REPLACE with your team number
-Members: Alice Example, Bob Example  <-- REPLACE with your team members' full names
+def read_input_file(file_path):
+    """Read and parse the input file"""
+    paintings = []
+    
+    try:
+        with open(file_path, 'r') as file:
+            # Read number of paintings
+            n = int(file.readline().strip())
+            
+            # Read each painting
+            for i in range(n):
+                line = file.readline().strip().split()
+                if not line:
+                    continue
+                    
+                orientation = line[0]
+                num_tags = int(line[1])
+                tags = line[2:2+num_tags]
+                
+                paintings.append({
+                    'id': i,
+                    'orientation': orientation,
+                    'tags': set(tags)
+                })
+                
+        return paintings
+    
+    except FileNotFoundError:
+        print(f"Error: File '{file_path}' not found.")
+        return None
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return None
 
-Single-file solver:
- - Parses one input file
- - Builds frameglasses (landscapes single, portraits paired)
- - Produces an ordering using several heuristics optimized for time & memory
- - Writes output file
- - Prints score and timing information
-
-Usage:
-    python KCW_Team_XX.py --input Data/0_example.txt --output Outputs/out_0_example.txt \
-                         --pairing greedy --ordering clustered_greedy --seed 42
-
-Notes:
- - No external libraries required.
- - Designed to be fast and memory-conscious for large inputs.
-"""
-
-from typing import List, Tuple, Dict, Set, Optional
-from collections import defaultdict, Counter
-import argparse, time, random, sys
-
-# ------------------------------
-# Team metadata (MANDATORY)
-# ------------------------------
-TEAM_NUMBER = "XX"
-TEAM_MEMBERS = ["Alice Example", "Bob Example"]
-
-# ------------------------------
-# Basic data types
-# ------------------------------
-class Painting:
-    __slots__ = ("id", "orientation", "tags")
-    def __init__(self, pid: int, orientation: str, tags: Set[str]):
-        self.id = pid
-        self.orientation = orientation  # 'L' or 'P'
-        self.tags = tags
-
-class Frameglass:
-    __slots__ = ("ids", "tags")
-    def __init__(self, ids: Tuple[int, ...], tags: Set[str]):
-        self.ids = ids
-        self.tags = tags
-
-# ------------------------------
-# Parsing input
-# ------------------------------
-def parse_input_file(path: str) -> List[Painting]:
-    """
-    Parse input file strictly as specified:
-      N
-      L/P Mi tag1 tag2 ...
-    Returns list of Painting objects indexed by id (0..N-1)
-    Complexity: O(N + total_tags)
-    """
-    paintings: List[Painting] = []
-    with open(path, 'r', encoding='utf8') as f:
-        first = f.readline()
-        if not first:
-            raise ValueError("Empty input file")
-        N = int(first.strip())
-        for pid in range(N):
-            line = f.readline()
-            if not line:
-                raise ValueError(f"Unexpected EOF while reading painting {pid}")
-            parts = line.strip().split()
-            if len(parts) < 2:
-                raise ValueError(f"Bad line for painting {pid}: {line!r}")
-            orient = parts[0]
-            m = int(parts[1])
-            tags = parts[2:2+m]
-            if len(tags) != m:
-                raise ValueError(f"Tag count mismatch for painting {pid}")
-            paintings.append(Painting(pid, orient, set(tags)))
-    return paintings
-
-# ------------------------------
-# Portrait pairing algorithms
-# ------------------------------
-def naive_pair_portraits(portraits: List[Painting]) -> List[Tuple[int,int]]:
-    """Simple sequential pairing: 0-1, 2-3, ... (fast, minimal memory)"""
-    pairs: List[Tuple[int,int]] = []
-    for i in range(0, len(portraits)-1, 2):
-        pairs.append((portraits[i].id, portraits[i+1].id))
-    return pairs
-
-def greedy_pair_by_tag_similarity(portraits: List[Painting], max_candidates: int = 200, rng: Optional[random.Random] = None) -> List[Tuple[int,int]]:
-    """
-    Greedy pairing using tag-index neighbor lists.
-    For each portrait (pop arbitrary), search candidate portraits that share tags.
-    Limit candidate list to `max_candidates` (sample if larger) to control time.
-    """
-    if rng is None:
-        rng = random.Random()
-
-    id_map = {p.id: p for p in portraits}
-    unpaired = set(id_map.keys())
-    tag_index: Dict[str, Set[int]] = defaultdict(set)
-    for p in portraits:
-        for t in p.tags:
-            tag_index[t].add(p.id)
-
-    pairs: List[Tuple[int,int]] = []
-    # Work list: simple list to iterate deterministically
-    work_list = list(unpaired)
-    # Shuffle to avoid worst-case ordering
-    rng.shuffle(work_list)
-
-    for pid in work_list:
-        if pid not in unpaired:
-            continue
-        p = id_map[pid]
-        # collect neighbors that share any tag
-        candidates = set()
-        for t in p.tags:
-            candidates.update(tag_index[t])
-        candidates &= unpaired
-        candidates.discard(pid)
-        # if too many candidates, sample for speed
-        if not candidates:
-            # pair with any remaining
-            if len(unpaired) <= 1:
-                break
-            other = next(iter(unpaired - {pid}))
-            pairs.append((pid, other))
-            unpaired.remove(pid)
-            unpaired.remove(other)
-            continue
-        cand_list = list(candidates)
-        if len(cand_list) > max_candidates:
-            cand_list = rng.sample(cand_list, max_candidates)
-        # choose best candidate by (common_tags, -union_size)
-        best = None
-        best_key = (-1, 10**9)
-        for oid in cand_list:
-            op = id_map[oid]
-            common = len(p.tags & op.tags)
-            union_size = len(p.tags | op.tags)
-            key = (common, -union_size)
-            if key > best_key:
-                best_key = key
-                best = oid
-        if best is None:
-            other = next(iter(unpaired - {pid}))
-            pairs.append((pid, other))
-            unpaired.remove(pid)
-            unpaired.remove(other)
-        else:
-            pairs.append((pid, best))
-            unpaired.remove(pid)
-            unpaired.remove(best)
-    return pairs
-
-# ------------------------------
-# Frameglass creation wrapper
-# ------------------------------
-def make_frameglasses(paintings: List[Painting], pairing: str = "greedy", rng_seed: Optional[int]=None) -> List[Frameglass]:
-    rng = random.Random(rng_seed)
-    landscapes = [p for p in paintings if p.orientation == 'L']
-    portraits = [p for p in paintings if p.orientation == 'P']
-
-    frameglasses: List[Frameglass] = []
-    # landscapes as singletons
-    for lp in landscapes:
-        frameglasses.append(Frameglass((lp.id,), lp.tags))
-
-    # pair portraits
-    if len(portraits) >= 2:
-        if pairing == "naive":
-            pairs = naive_pair_portraits(portraits)
-        else:
-            pairs = greedy_pair_by_tag_similarity(portraits, rng=rng)
-        id_map = {p.id: p for p in paintings}
-        for a,b in pairs:
-            tags_union = id_map[a].tags | id_map[b].tags
-            frameglasses.append(Frameglass((a,b), tags_union))
+def create_frameglasses(paintings):
+    """Create frameglasses from paintings"""
+    landscapes = [p for p in paintings if p['orientation'] == 'L']
+    portraits = [p for p in paintings if p['orientation'] == 'P']
+    
+    frameglasses = []
+    
+    # Create frameglasses for landscapes (one painting each)
+    for landscape in landscapes:
+        frameglasses.append({
+            'type': 'landscape',
+            'paintings': [landscape['id']],
+            'tags': landscape['tags']
+        })
+    
+    # Create frameglasses for portraits (two paintings each)
+    for i in range(0, len(portraits) - 1, 2):
+        portrait1 = portraits[i]
+        portrait2 = portraits[i + 1]
+        
+        combined_tags = portrait1['tags'] | portrait2['tags']
+        
+        frameglasses.append({
+            'type': 'portrait',
+            'paintings': [portrait1['id'], portrait2['id']],
+            'tags': combined_tags
+        })
+    
     return frameglasses
 
-# ------------------------------
-# Scoring functions
-# ------------------------------
-def local_score(tags_a: Set[str], tags_b: Set[str]) -> int:
-    c = len(tags_a & tags_b)
-    a = len(tags_a - tags_b)
-    b = len(tags_b - tags_a)
-    return min(c, a, b)
+def order_same(frameglasses):
+    """Order frameglasses in the same order as created"""
+    return frameglasses.copy()
 
-def global_score(order: List[Frameglass]) -> int:
-    total = 0
-    for i in range(len(order)-1):
-        total += local_score(order[i].tags, order[i+1].tags)
-    return total
+def order_reverse(frameglasses):
+    """Order frameglasses in reverse order"""
+    return frameglasses[::-1]
 
-# ------------------------------
-# Ordering heuristics
-# ------------------------------
-def order_same(frameglasses: List[Frameglass]) -> List[Frameglass]:
-    return list(frameglasses)
+def order_random(frameglasses):
+    """Order frameglasses randomly"""
+    shuffled = frameglasses.copy()
+    random.shuffle(shuffled)
+    return shuffled
 
-def order_reverse(frameglasses: List[Frameglass]) -> List[Frameglass]:
-    return list(reversed(frameglasses))
+def order_by_tag_count(frameglasses):
+    """Order frameglasses by number of tags (ascending)"""
+    return sorted(frameglasses, key=lambda x: len(x['tags']))
 
-def order_random(frameglasses: List[Frameglass], seed: Optional[int]=None) -> List[Frameglass]:
-    rng = random.Random(seed)
-    arr = list(frameglasses)
-    rng.shuffle(arr)
-    return arr
+def calculate_satisfaction(frameglasses_order):
+    """Calculate the global robotic satisfaction score"""
+    if len(frameglasses_order) < 2:
+        return 0
+    
+    total_score = 0
+    
+    for i in range(len(frameglasses_order) - 1):
+        tags1 = frameglasses_order[i]['tags']
+        tags2 = frameglasses_order[i + 1]['tags']
+        
+        common = len(tags1 & tags2)
+        only1 = len(tags1 - tags2)
+        only2 = len(tags2 - tags1)
+        
+        local_score = min(common, only1, only2)
+        total_score += local_score
+    
+    return total_score
 
-def order_by_tag_count(frameglasses: List[Frameglass], descending: bool = True) -> List[Frameglass]:
-    return sorted(frameglasses, key=lambda fg: len(fg.tags), reverse=descending)
+def write_output_file(frameglasses, output_path):
+    """Write the output file in required format"""
+    try:
+        with open(output_path, 'w') as file:
+            # Write number of frameglasses
+            file.write(f"{len(frameglasses)}\n")
+            
+            # Write each frameglass
+            for fg in frameglasses:
+                if fg['type'] == 'landscape':
+                    file.write(f"{fg['paintings'][0]}\n")
+                else:  # portrait
+                    file.write(f"{fg['paintings'][0]} {fg['paintings'][1]}\n")
+        
+        print(f"Output written to: {output_path}")
+        return True
+    
+    except Exception as e:
+        print(f"Error writing output file: {e}")
+        return False
 
-def greedy_next(frameglasses: List[Frameglass], start_idx: int = 0, sample_limit: int = 1000) -> List[Frameglass]:
-    """
-    Greedy next selection:
-     - Start at start_idx
-     - At each step, pick the remaining frameglass that maximizes local_score(current, candidate)
-     - To control time on large F, if remaining set is large, sample up to sample_limit candidates
-    Complexity: approx O(F * sample_limit) instead of O(F^2) when sampling is used.
-    """
-    n = len(frameglasses)
-    if n == 0:
-        return []
-    remaining = set(range(n))
-    order_idx = []
-    cur = start_idx % n
-    order_idx.append(cur)
-    remaining.remove(cur)
-    rng = random.Random(12345)
-    while remaining:
-        best = None
-        best_val = -1
-        best_size = -1
-        # candidate indices
-        if len(remaining) <= sample_limit:
-            cand_iter = list(remaining)
-        else:
-            cand_iter = rng.sample(list(remaining), sample_limit)
-        cur_tags = frameglasses[cur].tags
-        for j in cand_iter:
-            val = local_score(cur_tags, frameglasses[j].tags)
-            size = len(frameglasses[j].tags)
-            if val > best_val or (val == best_val and size > best_size):
-                best_val = val
-                best = j
-                best_size = size
-        if best is None:
-            # fallback: pick any
-            best = next(iter(remaining))
-        order_idx.append(best)
-        remaining.remove(best)
-        cur = best
-    return [frameglasses[i] for i in order_idx]
+def evaluate_strategy(strategy_name, frameglasses, strategy_func):
+    """Evaluate a single strategy and return results"""
+    start_time = time.time()
+    
+    # Apply ordering strategy
+    ordered_frameglasses = strategy_func(frameglasses)
+    
+    # Calculate score
+    score = calculate_satisfaction(ordered_frameglasses)
+    
+    end_time = time.time()
+    execution_time = end_time - start_time
+    
+    return {
+        'name': strategy_name,
+        'ordered_frameglasses': ordered_frameglasses,
+        'score': score,
+        'time': execution_time
+    }
 
-def greedy_multiple_starts(frameglasses: List[Frameglass], tries: int = 8, sample_limit: int = 1000) -> List[Frameglass]:
-    """Run greedy_next from several starts (first paintings or random) and keep best."""
-    n = len(frameglasses)
-    if n == 0:
-        return []
-    best_ord = None
-    best_score = -1
-    starts = list(range(min(n, tries)))
-    # if tries > n, add random starts
-    rng = random.Random(42)
-    while len(starts) < tries:
-        starts.append(rng.randrange(n))
-    for s in starts:
-        ord_fg = greedy_next(frameglasses, start_idx=s, sample_limit=sample_limit)
-        sc = global_score(ord_fg)
-        if sc > best_score:
-            best_score = sc
-            best_ord = ord_fg
-    return best_ord
-
-def clustered_greedy(frameglasses: List[Frameglass], cluster_by_top_tag: int = 1, tries_per_cluster: int = 3, sample_limit: int = 500) -> List[Frameglass]:
-    """
-    Cluster by top-most frequent tags to reduce pairwise comparisons:
-     1. Compute most frequent tags across frameglasses.
-     2. Assign each frameglass to cluster of its most frequent tag (top cluster_by_top_tag choices)
-     3. Order clusters by size or frequency
-     4. Within each cluster, use greedy_multiple_starts
-     5. Concatenate cluster orders and optionally run local swaps between cluster boundaries.
-    This reduces comparisons and often yields good scores quickly.
-    """
-    if not frameglasses:
-        return []
-    # compute tag frequency
-    counter = Counter()
-    for fg in frameglasses:
-        counter.update(fg.tags)
-    # for each frameglass, pick its highest frequency tag as cluster key
-    clusters: Dict[str, List[Frameglass]] = defaultdict(list)
-    for fg in frameglasses:
-        # find best tag by global frequency
-        best_tag = None
-        best_freq = -1
-        for t in fg.tags:
-            if counter[t] > best_freq:
-                best_freq = counter[t]; best_tag = t
-        if best_tag is None:
-            clusters["__none__"].append(fg)
-        else:
-            clusters[best_tag].append(fg)
-    # order clusters by size (descending) to place large cohesive blocks first
-    cluster_items = sorted(clusters.items(), key=lambda kv: -len(kv[1]))
-    ordered_blocks: List[Frameglass] = []
-    for tag, fgs in cluster_items:
-        # within cluster, run greedy multiple starts
-        ord_block = greedy_multiple_starts(fgs, tries=tries_per_cluster, sample_limit=sample_limit)
-        ordered_blocks.extend(ord_block)
-    # optional quick local smoothing across block boundaries:
-    # try swapping last of block i and first of block i+1 if improves score locally
-    # (cheap local improvement)
-    ordered = ordered_blocks
-    changed = True
-    passes = 0
-    while passes < 2 and changed:
-        changed = False
-        for i in range(len(ordered)-2):
-            a, b, c = ordered[i], ordered[i+1], ordered[i+2]
-            # try swap b and c
-            before = local_score(a.tags, b.tags) + local_score(b.tags, c.tags)
-            after = local_score(a.tags, c.tags) + local_score(c.tags, b.tags)
-            if after > before:
-                ordered[i+1], ordered[i+2] = ordered[i+2], ordered[i+1]
-                changed = True
-        passes += 1
-    return ordered
-
-# ------------------------------
-# Output writer
-# ------------------------------
-def write_submission(order: List[Frameglass], outpath: str):
-    with open(outpath, 'w', encoding='utf8') as f:
-        f.write(str(len(order)) + "\n")
-        for fg in order:
-            if len(fg.ids) == 1:
-                f.write(f"{fg.ids[0]}\n")
-            else:
-                f.write(f"{fg.ids[0]} {fg.ids[1]}\n")
-
-# ------------------------------
-# High-level pipeline
-# ------------------------------
-def pipeline_single_file(input_path: str, output_path: str,
-                         pairing: str = "greedy",
-                         ordering: str = "clustered_greedy",
-                         tries: int = 8,
-                         seed: Optional[int] = None,
-                         sample_limit: int = 1000) -> Tuple[int, float]:
-    t0 = time.time()
-    paintings = parse_input_file(input_path)
-    frameglasses = make_frameglasses(paintings, pairing=pairing, rng_seed=seed)
-    # choose ordering strategy
-    if ordering == "same":
-        order = order_same(frameglasses)
-    elif ordering == "reverse":
-        order = order_reverse(frameglasses)
-    elif ordering == "random":
-        order = order_random(frameglasses, seed=seed)
-    elif ordering == "tag_count":
-        order = order_by_tag_count(frameglasses)
-    elif ordering == "greedy_next":
-        order = greedy_next(frameglasses, sample_limit=sample_limit)
-    elif ordering == "greedy_multi":
-        order = greedy_multiple_starts(frameglasses, tries=tries, sample_limit=sample_limit)
-    elif ordering == "clustered_greedy":
-        order = clustered_greedy(frameglasses, tries_per_cluster=max(2, tries//2), sample_limit=max(200, sample_limit//2))
-    else:
-        order = clustered_greedy(frameglasses)
-    score = global_score(order)
-    elapsed = time.time() - t0
-    write_submission(order, output_path)
-    return score, elapsed
-
-# ------------------------------
-# CLI
-# ------------------------------
-def main_cli():
-    p = argparse.ArgumentParser(description="KCW Team XX - optimized solver")
-    p.add_argument('--input', '-i', required=True, help='Input file path')
-    p.add_argument('--output', '-o', required=True, help='Output file path')
-    p.add_argument('--pairing', choices=['greedy','naive'], default='greedy', help='Portrait pairing method')
-    p.add_argument('--ordering', choices=['clustered_greedy','greedy_multi','greedy_next','tag_count','random','same','reverse'],
-                   default='clustered_greedy', help='Ordering method')
-    p.add_argument('--tries', type=int, default=8, help='Number of tries for multi-start methods')
-    p.add_argument('--seed', type=int, default=None, help='Random seed')
-    p.add_argument('--sample', type=int, default=1000, help='Sample limit for greedy selection (trade speed vs quality)')
-    args = p.parse_args()
-
-    score, elapsed = pipeline_single_file(args.input, args.output,
-                                         pairing=args.pairing,
-                                         ordering=args.ordering,
-                                         tries=args.tries,
-                                         seed=args.seed,
-                                         sample_limit=args.sample)
-    print(f"Team {TEAM_NUMBER} | Members: {', '.join(TEAM_MEMBERS)}")
-    print(f"Input: {args.input}")
-    print(f"Output: {args.output}")
-    print(f"Pairing: {args.pairing} | Ordering: {args.ordering}")
-    print(f"Score: {score} | Time: {elapsed:.3f}s")
+def main():
+    """Main function"""
+    print("=== HCW Painting Ordering System ===")
+    print("Task: Implement basic ordering strategies\n")
+    
+    # Get input file path from user
+    file_path = input("Enter the path to the input file: ").strip()
+    
+    # Read and parse input file
+    print(f"\nReading input file: {file_path}")
+    paintings = read_input_file(file_path)
+    
+    if paintings is None:
+        print("Failed to read input file. Exiting.")
+        return
+    
+    print(f"Successfully read {len(paintings)} paintings")
+    
+    # Count painting types
+    landscapes = sum(1 for p in paintings if p['orientation'] == 'L')
+    portraits = sum(1 for p in paintings if p['orientation'] == 'P')
+    print(f"Landscapes: {landscapes}, Portraits: {portraits}")
+    
+    # Create frameglasses
+    print("\nCreating frameglasses...")
+    frameglasses = create_frameglasses(paintings)
+    print(f"Created {len(frameglasses)} frameglasses")
+    
+    # Define strategies to evaluate
+    strategies = [
+        ("Same order", order_same),
+        ("Reverse order", order_reverse),
+        ("Random order", order_random),
+        ("Order by tag count", order_by_tag_count)
+    ]
+    
+    # Evaluate all strategies
+    print("\nEvaluating ordering strategies...")
+    results = []
+    
+    for strategy_name, strategy_func in strategies:
+        result = evaluate_strategy(strategy_name, frameglasses, strategy_func)
+        results.append(result)
+        print(f"{strategy_name}: Score = {result['score']}, Time = {result['time']:.4f}s")
+    
+    # Find best strategy
+    best_result = max(results, key=lambda x: x['score'])
+    print(f"\nBest strategy: {best_result['name']} with score {best_result['score']}")
+    
+    # Write output file for best strategy
+    output_path = file_path.replace('.txt', '_output.txt')
+    if write_output_file(best_result['ordered_frameglasses'], output_path):
+        print(f"Best ordering written to: {output_path}")
+    
+    # Display some statistics
+    print(f"\n=== Execution Summary ===")
+    print(f"Total paintings processed: {len(paintings)}")
+    print(f"Frameglasses created: {len(frameglasses)}")
+    print(f"Strategies evaluated: {len(strategies)}")
+    
+    # Show detailed results
+    print(f"\n=== Detailed Results ===")
+    for result in results:
+        print(f"{result['name']:20} | Score: {result['score']:4d} | Time: {result['time']:.4f}s")
 
 if __name__ == "__main__":
-    main_cli()
+    main()
