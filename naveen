@@ -1,23 +1,15 @@
 #!/usr/bin/env python3
 """
-ADAPTIVE OPTIMIZER - Scales with Input Size
+ADAPTIVE OPTIMIZER - Random Order Only
 Battle of Heuristics Challenge Week - Exhibition Opening Optimizer
-
-Performance Targets:
-- 1MB file: < 1 minute
-- 2MB file: < 2 minutes  
-- n > 5MB files: < 10 minutes
-- All files: < 20 minutes total
-- Max 8GB RAM usage
 """
 
 import sys
 import time
 import random
 import os
-from typing import List, Tuple, Set, Dict
+from typing import List, Tuple, Set
 from collections import defaultdict
-import math
 
 
 class Painting:
@@ -47,21 +39,7 @@ class Frameglass:
         return " ".join(str(p.id) for p in self.paintings)
 
 
-def get_file_complexity(filename: str) -> Tuple[int, str]:
-    """Determine file size and choose appropriate strategy."""
-    file_size_mb = os.path.getsize(filename) / (1024 * 1024)
-    
-    if file_size_mb <= 1:
-        return 10000, "aggressive"      # ~10K paintings
-    elif file_size_mb <= 2:
-        return 20000, "balanced"        # ~20K paintings  
-    elif file_size_mb <= 5:
-        return 50000, "conservative"    # ~50K paintings
-    else:
-        return 100000, "minimal"        # 100K+ paintings
-
-
-def parse_input_adaptive(filename: str) -> Tuple[List[Painting], List[Painting]]:
+def parse_input(filename: str) -> Tuple[List[Painting], List[Painting]]:
     """Memory-efficient parsing."""
     landscapes = []
     portraits = []
@@ -72,7 +50,6 @@ def parse_input_adaptive(filename: str) -> Tuple[List[Painting], List[Painting]]
         for i in range(n):
             line = f.readline().strip().split()
             orientation = line[0]
-            # Use frozenset for memory efficiency if very large
             tags = set(line[2:])
             
             painting = Painting(i, orientation, tags)
@@ -85,10 +62,8 @@ def parse_input_adaptive(filename: str) -> Tuple[List[Painting], List[Painting]]
     return landscapes, portraits
 
 
-def create_frameglasses_adaptive(landscapes: List[Painting], 
-                                portraits: List[Painting],
-                                strategy: str) -> List[Frameglass]:
-    """Adaptive portrait pairing based on size strategy."""
+def create_frameglasses_simple(landscapes: List[Painting], portraits: List[Painting]) -> List[Frameglass]:
+    """Simple portrait pairing - use random order."""
     frameglasses = []
     
     # Landscapes are always straightforward
@@ -98,39 +73,25 @@ def create_frameglasses_adaptive(landscapes: List[Painting],
     if not portraits:
         return frameglasses
     
-    # Choose search window based on strategy
-    search_windows = {
-        "aggressive": 2000,    # Large search for best quality
-        "balanced": 1000,      # Balanced quality/speed
-        "conservative": 500,   # Faster, decent quality
-        "minimal": 100         # Fastest, basic quality
-    }
-    search_window = search_windows[strategy]
+    # Shuffle portraits for random pairing
+    random.shuffle(portraits)
+    used = [False] * len(portraits)
     
-    portraits_sorted = sorted(portraits, key=lambda p: -p.tag_count)
-    used = [False] * len(portraits_sorted)
-    
-    # Efficient pairing with adaptive window
-    for i in range(len(portraits_sorted)):
+    # Simple pairing in random order
+    for i in range(len(portraits)):
         if used[i]:
             continue
             
-        p1 = portraits_sorted[i]
+        p1 = portraits[i]
         best_j = -1
         best_score = -1
         
-        # Adaptive search window
-        search_limit = min(i + search_window, len(portraits_sorted))
-        
-        for j in range(i + 1, search_limit):
+        # Look for any available pair
+        for j in range(i + 1, len(portraits)):
             if used[j]:
                 continue
                 
-            p2 = portraits_sorted[j]
-            # Fast union estimation (avoid exact calculation when possible)
-            if p1.tag_count + p2.tag_count <= best_score:
-                continue  # Can't beat current best
-                
+            p2 = portraits[j]
             union_size = len(p1.tags | p2.tags)
             score = union_size
             
@@ -139,11 +100,11 @@ def create_frameglasses_adaptive(landscapes: List[Painting],
                 best_j = j
         
         if best_j != -1:
-            frameglasses.append(Frameglass([p1, portraits_sorted[best_j]]))
+            frameglasses.append(Frameglass([p1, portraits[best_j]]))
             used[i] = True
             used[best_j] = True
         else:
-            # Single portrait if no good pair found
+            # Single portrait if no pair found
             frameglasses.append(Frameglass([p1]))
             used[i] = True
     
@@ -152,7 +113,6 @@ def create_frameglasses_adaptive(landscapes: List[Painting],
 
 def calculate_local_score_fast(fg1: Frameglass, fg2: Frameglass) -> int:
     """Optimized score calculation using cached tag lists."""
-    # Quick check for obvious zero score
     if fg1.tag_count == 0 or fg2.tag_count == 0:
         return 0
     
@@ -167,143 +127,6 @@ def calculate_local_score_fast(fg1: Frameglass, fg2: Frameglass) -> int:
     return min(common, only_first, only_second)
 
 
-def order_strategies_adaptive(frameglasses: List[Frameglass], 
-                            strategy: str,
-                            time_budget: float) -> List[Frameglass]:
-    """Choose ordering strategies based on available time and problem size."""
-    
-    n = len(frameglasses)
-    strategies_to_try = []
-    
-    if strategy == "aggressive" and n <= 10000:
-        # Small files: try many strategies
-        strategies_to_try = [
-            ("greedy_1000", lambda: order_greedy_adaptive(frameglasses, 1000)),
-            ("greedy_500", lambda: order_greedy_adaptive(frameglasses, 500)),
-            ("by_tags", lambda: sorted(frameglasses, key=lambda fg: -fg.tag_count)),
-            ("sim_anneal_fast", lambda: simulated_annealing_fast(frameglasses, 5000)),
-        ]
-    elif strategy == "balanced" and n <= 20000:
-        # Medium files: fewer strategies
-        strategies_to_try = [
-            ("greedy_500", lambda: order_greedy_adaptive(frameglasses, 500)),
-            ("by_tags", lambda: sorted(frameglasses, key=lambda fg: -fg.tag_count)),
-            ("greedy_200", lambda: order_greedy_adaptive(frameglasses, 200)),
-        ]
-    elif strategy == "conservative" and n <= 50000:
-        # Large files: fast strategies only
-        strategies_to_try = [
-            ("greedy_200", lambda: order_greedy_adaptive(frameglasses, 200)),
-            ("by_tags", lambda: sorted(frameglasses, key=lambda fg: -fg.tag_count)),
-        ]
-    else:
-        # Very large files: minimal strategy
-        strategies_to_try = [
-            ("by_tags", lambda: sorted(frameglasses, key=lambda fg: -fg.tag_count)),
-            ("greedy_100", lambda: order_greedy_adaptive(frameglasses, 100)),
-        ]
-    
-    best_score = -1
-    best_ordered = frameglasses[:]  # Default to original order
-    
-    start_time = time.time()
-    
-    for strategy_name, strategy_func in strategies_to_try:
-        if time.time() - start_time > time_budget * 0.8:  # Leave 20% buffer
-            break
-            
-        try:
-            ordered = strategy_func()
-            score = calculate_total_score_fast(ordered)
-            
-            if score > best_score:
-                best_score = score
-                best_ordered = ordered
-        except Exception as e:
-            print(f"  Strategy {strategy_name} failed: {e}")
-            continue
-    
-    return best_ordered
-
-
-def order_greedy_adaptive(frameglasses: List[Frameglass], 
-                         candidate_limit: int) -> List[Frameglass]:
-    """Greedy ordering with adaptive candidate limit."""
-    if len(frameglasses) <= 1:
-        return frameglasses
-    
-    # Start with highest tag count
-    start_idx = max(range(len(frameglasses)), key=lambda i: frameglasses[i].tag_count)
-    
-    ordered = [frameglasses[start_idx]]
-    remaining = set(range(len(frameglasses)))
-    remaining.remove(start_idx)
-    
-    while remaining:
-        current = ordered[-1]
-        best_idx = None
-        best_score = -1
-        
-        # Adaptive candidate selection
-        if len(remaining) > candidate_limit:
-            # Select top candidates by tag count similarity
-            candidates = sorted(remaining, 
-                              key=lambda i: -frameglasses[i].tag_count)[:candidate_limit]
-        else:
-            candidates = list(remaining)
-        
-        for idx in candidates:
-            score = calculate_local_score_fast(current, frameglasses[idx])
-            if score > best_score:
-                best_score = score
-                best_idx = idx
-        
-        if best_idx is not None:
-            ordered.append(frameglasses[best_idx])
-            remaining.remove(best_idx)
-        elif remaining:
-            # Fallback
-            idx = next(iter(remaining))
-            ordered.append(frameglasses[idx])
-            remaining.remove(idx)
-    
-    return ordered
-
-
-def simulated_annealing_fast(frameglasses: List[Frameglass], 
-                           iterations: int) -> List[Frameglass]:
-    """Fast simulated annealing for small-to-medium instances."""
-    current = frameglasses[:]
-    current_score = calculate_total_score_fast(current)
-    best = current[:]
-    best_score = current_score
-    
-    temperature = 1.0
-    cooling_rate = 0.999
-    
-    for i in range(iterations):
-        # Simple swap
-        neighbor = current[:]
-        idx1, idx2 = random.sample(range(len(neighbor)), 2)
-        neighbor[idx1], neighbor[idx2] = neighbor[idx2], neighbor[idx1]
-        
-        neighbor_score = calculate_total_score_fast(neighbor)
-        
-        # Accept with probability
-        if neighbor_score > current_score or \
-           random.random() < math.exp((neighbor_score - current_score) / temperature):
-            current = neighbor
-            current_score = neighbor_score
-            
-            if current_score > best_score:
-                best = current[:]
-                best_score = current_score
-        
-        temperature *= cooling_rate
-    
-    return best
-
-
 def calculate_total_score_fast(frameglasses: List[Frameglass]) -> int:
     """Calculate total score efficiently."""
     total = 0
@@ -312,75 +135,67 @@ def calculate_total_score_fast(frameglasses: List[Frameglass]) -> int:
     return total
 
 
-def solve_with_time_budget(input_file: str, output_file: str, verbose: bool = True):
-    """Main solver with adaptive time budgeting."""
-    file_size_mb = os.path.getsize(input_file) / (1024 * 1024)
-    
-    # Set time budget based on file size
-    if file_size_mb <= 1:
-        time_budget = 50  # 50 seconds for 1MB files
-    elif file_size_mb <= 2:
-        time_budget = 100  # 100 seconds for 2MB files
-    elif file_size_mb <= 5:
-        time_budget = 300  # 5 minutes for 2-5MB files
-    else:
-        time_budget = 600  # 10 minutes for >5MB files
-    
+def order_random_only(frameglasses: List[Frameglass]) -> List[Frameglass]:
+    """Use only random order for frameglasses."""
+    random.shuffle(frameglasses)
+    return frameglasses
+
+
+def ensure_output_directory():
+    """Create output directory if it doesn't exist."""
+    output_dir = "output"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"📁 Created output directory: {output_dir}")
+    return output_dir
+
+
+def get_output_path(input_file: str, output_dir: str) -> str:
+    """Generate output path with same filename as input in output directory."""
+    # Get just the filename without path
+    filename = os.path.basename(input_file)
+    # Return path in output directory with same filename
+    return os.path.join(output_dir, filename)
+
+
+def solve_with_random_order(input_file: str, output_file: str, verbose: bool = True):
+    """Main solver using only random order."""
     if verbose:
-        print(f"Processing: {input_file} ({file_size_mb:.1f} MB)")
-        print(f"Time budget: {time_budget}s | Strategy: adaptive")
+        print(f"Processing: {input_file}")
+        print("Using RANDOM ORDER only for frameglasses")
         print("Phase 1: Parsing and frameglass creation...")
     
     overall_start = time.time()
     
-    # Phase 1: Parse and create frameglasses (fixed time)
+    # Phase 1: Parse and create frameglasses
     parse_start = time.time()
-    landscapes, portraits = parse_input_adaptive(input_file)
+    landscapes, portraits = parse_input(input_file)
     parse_time = time.time() - parse_start
     
-    strategy = get_file_complexity(input_file)[1]
-    
     frame_start = time.time()
-    frameglasses = create_frameglasses_adaptive(landscapes, portraits, strategy)
+    frameglasses = create_frameglasses_simple(landscapes, portraits)
     frame_time = time.time() - frame_start
     
-    phase1_time = parse_time + frame_time
-    remaining_budget = time_budget - phase1_time
-    
     if verbose:
-        print(f"✓ Phase 1: {phase1_time:.1f}s ({len(frameglasses)} frameglasses)")
-        print(f"✓ Remaining time budget: {remaining_budget:.1f}s")
-        print("Phase 2: Ordering optimization...")
+        print(f"✓ Phase 1: {parse_time + frame_time:.1f}s ({len(frameglasses)} frameglasses)")
+        print("Phase 2: Random ordering...")
     
-    if remaining_budget <= 5:
-        if verbose:
-            print("⚠️  Time budget tight, using fast fallback ordering")
-        # Fallback: simple tag-based ordering
-        best_ordered = sorted(frameglasses, key=lambda fg: -fg.tag_count)
-    else:
-        # Phase 2: Ordering with remaining time budget
-        order_start = time.time()
-        best_ordered = order_strategies_adaptive(frameglasses, strategy, remaining_budget - 5)
-        order_time = time.time() - order_start
-        
-        if verbose:
-            print(f"✓ Phase 2: {order_time:.1f}s")
+    # Phase 2: Use only random ordering
+    order_start = time.time()
+    ordered_frameglasses = order_random_only(frameglasses)
+    order_time = time.time() - order_start
     
     # Write output
-    write_output(output_file, best_ordered)
+    write_output(output_file, ordered_frameglasses)
     
     total_time = time.time() - overall_start
-    final_score = calculate_total_score_fast(best_ordered)
+    final_score = calculate_total_score_fast(ordered_frameglasses)
     
     if verbose:
+        print(f"✓ Phase 2: {order_time:.1f}s")
         print(f"\n🏆 Final Score: {final_score:,}")
-        print(f"⏱️  Total Time: {total_time:.1f}s (Budget: {time_budget}s)")
+        print(f"⏱️  Total Time: {total_time:.1f}s")
         print(f"✓ Output: {output_file}")
-        
-        if total_time > time_budget:
-            print(f"⚠️  Exceeded time budget by {total_time - time_budget:.1f}s")
-        else:
-            print(f"✅ Within time budget! ({time_budget - total_time:.1f}s remaining)")
     
     return final_score, total_time
 
@@ -393,79 +208,88 @@ def write_output(filename: str, frameglasses: List[Frameglass]):
             f.write(f"{fg.get_output_line()}\n")
 
 
-def solve_all_files_adaptive():
-    """Process all files with adaptive time budgeting."""
+def solve_all_files_random():
+    """Process all files using only random order."""
+    # Ensure output directory exists
+    output_dir = ensure_output_directory()
+    
     files = [
-        ("0_example.txt", "0_output.txt"),
-        ("1_binary_landscapes.txt", "1_output.txt"), 
-        ("10_computable_moments.txt", "10_output.txt"),
-        ("11_randomizing_paintings.txt", "11_output.txt"),
-        ("110_oily_portraits.txt", "110_output.txt")
+        "0_example.txt",
+        "1_binary_landscapes.txt", 
+        "10_computable_moments.txt",
+        "11_randomizing_paintings.txt",
+        "110_oily_portraits.txt"
     ]
     
-    print("=" * 70)
-    print("ADAPTIVE EXHIBITION OPTIMIZER")
-    print("=" * 70)
+    print("=" * 60)
+    print("RANDOM ORDER EXHIBITION OPTIMIZER")
+    print("=" * 60)
+    print(f"📁 Output directory: {output_dir}/")
+    print("=" * 60)
     
     total_score = 0
     total_time = 0
     results = []
     
-    for input_file, output_file in files:
+    for input_file in files:
         if not os.path.exists(input_file):
             print(f"⚠️  Skipping {input_file} (not found)")
             continue
         
         try:
+            # Generate output path with same filename in output directory
+            output_file = get_output_path(input_file, output_dir)
             file_size_mb = os.path.getsize(input_file) / (1024 * 1024)
-            print(f"\n📁 File: {input_file} ({file_size_mb:.1f} MB)")
+            print(f"\n📁 Input: {input_file} ({file_size_mb:.1f} MB)")
+            print(f"📁 Output: {output_file}")
             
-            score, elapsed = solve_with_time_budget(input_file, output_file, verbose=True)
+            score, elapsed = solve_with_random_order(input_file, output_file, verbose=True)
             total_score += score
             total_time += elapsed
-            results.append((input_file, score, elapsed, file_size_mb))
+            results.append((input_file, output_file, score, elapsed, file_size_mb))
             
         except Exception as e:
             print(f"❌ Error: {e}")
             continue
     
     # Summary
-    print("\n" + "=" * 70)
-    print("FINAL SUMMARY")
-    print("=" * 70)
-    print(f"{'File':<25} {'Size':>6} {'Score':>12} {'Time':>8} {'Status':>10}")
-    print("-" * 70)
+    print("\n" + "=" * 60)
+    print("FINAL SUMMARY - RANDOM ORDER ONLY")
+    print("=" * 60)
+    print(f"{'Input File':<25} {'Size':>6} {'Score':>12} {'Time':>8} {'Output File'}")
+    print("-" * 60)
     
-    for filename, score, elapsed, size in results:
-        status = "✅" if elapsed <= (size * 60 if size <= 5 else 600) else "⚠️"
-        print(f"{filename:<25} {size:>5.1f}M {score:>12,} {elapsed:>7.1f}s {status:>10}")
+    for input_file, output_file, score, elapsed, size in results:
+        output_filename = os.path.basename(output_file)
+        print(f"{input_file:<25} {size:>5.1f}M {score:>12,} {elapsed:>7.1f}s {output_filename}")
     
-    print("-" * 70)
+    print("-" * 60)
     print(f"{'TOTAL':<25} {'':>6} {total_score:>12,} {total_time:>7.1f}s")
-    
-    if total_time > 1200:  # 20 minutes
-        print(f"❌ EXCEEDED 20-MINUTE LIMIT by {total_time - 1200:.1f}s!")
-    else:
-        print(f"✅ Within 20-minute limit! ({1200 - total_time:.1f}s remaining)")
     
     return total_score, total_time
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:
-        # Batch mode
-        solve_all_files_adaptive()
+        # Batch mode - process all files
+        solve_all_files_random()
     else:
         # Single file mode
         input_file = sys.argv[1]
-        output_file = sys.argv[2] if len(sys.argv) >= 3 else input_file.replace('.txt', '_output.txt')
         
         if not os.path.exists(input_file):
             print(f"❌ File not found: {input_file}")
             sys.exit(1)
+        
+        # Ensure output directory exists
+        output_dir = ensure_output_directory()
+        # Generate output path with same filename in output directory
+        output_file = get_output_path(input_file, output_dir)
             
         try:
-            score, elapsed = solve_with_time_budget(input_file, output_file)
+            print(f"📁 Input: {input_file}")
+            print(f"📁 Output: {output_file}")
+            score, elapsed = solve_with_random_order(input_file, output_file)
             print(f"\n✅ SUCCESS! Score: {score:,} | Time: {elapsed:.1f}s")
         except Exception as e:
             print(f"\n❌ Error: {e}")
