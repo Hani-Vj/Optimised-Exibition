@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+# Modified file with new strategies integrated
+
+import sys
+import time
+import random
+import os
+from typing import List, Tuple, Set
+
+class Painting:
+    __slots__ = ('id', 'orientation', 'tags', 'tag_count')
+    def __init__(self, painting_id: int, orientation: str, tags: Set[str]):
+        self.id = painting_id
+        self.orientation = orientation
+        self.tags = tags
+        self.tag_count = len(tags)
+
+class Frameglass:
+    __slots__ = ('paintings', 'tags', 'tag_count')
+    def __init__(self, paintings: List[Painting]):
+        self.paintings = paintings
+        self.tags = set()
+        for p in paintings:
+            self.tags.update(p.tags)
+        self.tag_count = len(self.tags)
+
+    def get_output_line(self) -> str:
+        return " ".join(str(p.id) for p in self.paintings)
+
+def parse_input(filename: str) -> Tuple[List[Painting], List[Painting]]:
+    landscapes = []
+    portraits = []
+    with open(filename, 'r', encoding='utf-8') as f:
+        n = int(f.readline().strip())
+        print(f"Parsing {n} paintings...")
+
+        for i in range(n):
+            line = f.readline().strip().split()
+            orientation = line[0]
+            num_tags = int(line[1])
+            tags = set(line[2:2+num_tags])
+            painting = Painting(i, orientation, tags)
+            if orientation == 'L':
+                landscapes.append(painting)
+            else:
+                portraits.append(painting)
+
+    print(f"  Parsed: {len(landscapes)} landscapes, {len(portraits)} portraits")
+    return landscapes, portraits
+
+def create_frameglasses(landscapes: List[Painting], portraits: List[Painting]) -> List[Frameglass]:
+    frameglasses = []
+
+    print("Creating frameglasses...")
+
+    for painting in landscapes:
+        frameglasses.append(Frameglass([painting]))
+
+    i = 0
+    while i < len(portraits):
+        if i + 1 < len(portraits):
+            frameglasses.append(Frameglass([portraits[i], portraits[i + 1]]))
+            i += 2
+        else:
+            frameglasses.append(Frameglass([portraits[i]]))
+            i += 1
+
+    print(f"  Created {len(frameglasses)} frameglasses")
+    return frameglasses
+
+def calculate_local_score(fg1: Frameglass, fg2: Frameglass) -> int:
+    common = len(fg1.tags & fg2.tags)
+    only_first = len(fg1.tags - fg2.tags)
+    only_second = len(fg2.tags - fg1.tags)
+    return min(common, only_first, only_second)
+
+def calculate_total_score(frameglasses: List[Frameglass]) -> int:
+    total = 0
+    for i in range(len(frameglasses) - 1):
+        total += calculate_local_score(frameglasses[i], frameglasses[i + 1])
+    return total
+
+def order_same(frameglasses: List[Frameglass]) -> List[Frameglass]:
+    print("  Using 'same' ordering strategy...")
+    return frameglasses[:]
+
+def order_reverse(frameglasses: List[Frameglass]) -> List[Frameglass]:
+    print("  Using 'reverse' ordering strategy...")
+    return list(reversed(frameglasses))
+
+def order_random(frameglasses: List[Frameglass]) -> List[Frameglass]:
+    print("  Using 'random' ordering strategy...")
+    result = frameglasses[:]
+    random.shuffle(result)
+    return result
+
+def order_by_tag_count(frameglasses: List[Frameglass]) -> List[Frameglass]:
+    print("  Using 'by_tags' ordering strategy...")
+    return sorted(frameglasses, key=lambda fg: -fg.tag_count)
+
+# --- NEW STRATEGIES ---
+
+def order_asc(frameglasses: List[Frameglass]) -> List[Frameglass]:
+    print("  Using 'asc' ordering strategy...")
+    return sorted(frameglasses, key=lambda fg: fg.tag_count)
+
+def order_desc(frameglasses: List[Frameglass]) -> List[Frameglass]:
+    print("  Using 'desc' ordering strategy...")
+    asc = sorted(frameglasses, key=lambda fg: fg.tag_count)
+    return asc[::-1]
+
+def order_random_from_asc(frameglasses: List[Frameglass]) -> List[Frameglass]:
+    print("  Using 'rand_from_asc' ordering strategy...")
+    asc = sorted(frameglasses, key=lambda fg: fg.tag_count)
+    rnd = asc.copy()
+    random.shuffle(rnd)
+    return rnd
+
+def order_by_primary_tag(frameglasses: List[Frameglass]) -> List[Frameglass]:
+    print("  Using 'primary_tag' ordering strategy...")
+    return sorted(frameglasses, key=lambda fg: next(iter(fg.tags)) if fg.tags else "")
+
+def ensure_output_folder():
+    if not os.path.exists("Output"):
+        os.makedirs("Output")
+        print("Created 'Output' folder")
+    return "Output"
+
+def get_output_path(input_file: str) -> str:
+    output_folder = ensure_output_folder()
+    input_filename = os.path.basename(input_file)
+    output_filename = input_filename
+    output_path = os.path.join(output_folder, output_filename)
+    return output_path
+
+def write_output(filename: str, frameglasses: List[Frameglass]):
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(f"{len(frameglasses)}\\n")
+        for fg in frameglasses:
+            f.write(f"{fg.get_output_line()}\\n")
+    print(f"  Output written: {filename}")
+
+def solve_file_single_strategy(input_file: str, output_file: str, strategy_name: str, verbose: bool = True):
+    start_time = time.time()
+    landscapes, portraits = parse_input(input_file)
+    frameglasses = create_frameglasses(landscapes, portraits)
+
+    strategies = {
+        "same": order_same,
+        "reverse": order_reverse,
+        "random": order_random,
+        "by_tags": order_by_tag_count,
+
+        # new strategies
+        "asc": order_asc,
+        "desc": order_desc,
+        "rand_from_asc": order_random_from_asc,
+        "primary_tag": order_by_primary_tag,
+    }
+
+    ordered = strategies[strategy_name](frameglasses)
+    score = calculate_total_score(ordered)
+    write_output(output_file, ordered)
+
+    elapsed = time.time() - start_time
+    return score, elapsed
+
+# Keeping rest unchanged for brevity (menu, solve_all, etc.)
