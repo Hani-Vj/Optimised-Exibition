@@ -1,129 +1,203 @@
 #!/usr/bin/env python3
 """
-HCW 2025 - ULTRA FAST + LIVE PROGRESS BAR (NO EXTERNAL LIBS)
-Works on any machine with pure Python
+BATTLE OF HEURISTICS - FULL INTERACTIVE VERSION (2025)
+5 Real Strategies + Total Score + Total Time
 """
 
 import os
 import sys
 import time
 import random
+from typing import List, Tuple
 
 random.seed(42)
 
-Slide = tuple[list[int], frozenset[str]]  # (ids, tags)
+Slide = Tuple[list[int], frozenset[str]]
 
-# ==================== LIVE PROGRESS BAR (NO psutil) ====================
-def print_progress(done: int, total: int, start_time: float):
-    percent = 100.0 * done / total
-    bar_len = 45
-    filled = int(bar_len * done / total)
-    bar = "█" * filled + "░" * (bar_len - filled)
-    
-    elapsed = time.time() - start_time
-    eta = elapsed * (total - done) / done if done > 0 else 0
-    
-    sys.stdout.write(f"\rBuilding order |{bar}| {percent:5.1f}%  ({done}/{total})  ETA {eta:4.1f}s")
-    sys.stdout.flush()
-
-# ==================== PARSING + FAST PAIRING ====================
-def read_and_pair(filepath: str):
-    verticals = []
-    with open(filepath) as f:
-        n = int(f.readline().strip())
-        for i in range(n):
-            parts = f.readline().split()
-            tags = frozenset(parts[2:])
-            if parts[0] in ('H', 'L'):
-                yield [i], tags
-            else:
-                verticals.append((i, tags))
-    
-    # Pair verticals 0-1, 2-3, ... (fast & good)
-    for j in range(0, len(verticals)-1, 2):
-        id1, t1 = verticals[j]
-        id2, t2 = verticals[j+1]
-        yield [id1, id2], t1 | t2
-
-# ==================== SCORING ====================
-def score(a_tags, b_tags):
-    common = len(a_tags & b_tags)
-    return min(common, len(a_tags) - common, len(b_tags) - common)
-
-# ==================== MAIN SOLVER ====================
-def solve(filepath: str):
-    print(f"\n{'='*80}")
-    print(f"   PROCESSING: {os.path.basename(filepath)}")
-    print(f"{'='*80}")
-    
-    start_total = time.time()
-    
-    slides = list(read_and_pair(filepath))
-    total = len(slides)
-    print(f"   {total:,} slides created → Starting greedy (watch progress below)")
-    
-    # Start with richest slide
+# ==================== STRATEGIES ====================
+def strategy_same(slides: List[Slide]) -> List[Slide]:
+    """Greedy forward (best overall)"""
     best = max(slides, key=lambda s: len(s[1]))
     order = [best]
     remaining = slides[:]
     remaining.remove(best)
-    
-    current_tags = best[1]
-    progress_start = time.time()
-    
-    # Update progress ~100 times
-    interval = max(1, total // 100)
-    
+    cur = best[1]
     while remaining:
-        if len(order) % interval == 0:
-            print_progress(len(order), total, progress_start)
-        
-        # Super-fast sampling
-        k = min(200, len(remaining))
-        candidates = random.sample(remaining, k)
-        next_slide = max(candidates, key=lambda s: score(current_tags, s[1]))
-        
-        order.append(next_slide)
-        remaining.remove(next_slide)
-        current_tags = next_slide[1]
-    
-    # Final progress
-    print_progress(total, total, progress_start)
-    print(" → DONE!")
-    
-    final_score = sum(score(order[i][1], order[i+1][1]) for i in range(len(order)-1))
-    
-    out_file = "output_" + os.path.basename(filepath)
+        nxt = max(random.sample(remaining, min(250, len(remaining))), key=lambda s: score(cur, s[1]))
+        order.append(nxt)
+        remaining.remove(nxt)
+        cur = nxt[1]
+    return order
+
+def strategy_reverse(slides: List[Slide]) -> List[Slide]:
+    """Build forward then reverse (sometimes helps)"""
+    return strategy_same(slides)[::-1]
+
+def strategy_random(slides: List[Slide]) -> List[Slide]:
+    """Pure random order"""
+    random.shuffle(slides)
+    return slides
+
+def strategy_by_tags(slides: List[Slide]) -> List[Slide]:
+    """Sort by number of tags descending"""
+    return sorted(slides, key=lambda s: len(s[1]), reverse=True)
+
+def strategy_alternating(slides: List[Slide]) -> List[Slide]:
+    """Alternate high-tag and low-tag slides"""
+    high = sorted([s for s in slides if len(s[1]) > 10], key=lambda s: len(s[1]), reverse=True)
+    low = sorted([s for s in slides if len(s[1]) <= 10], key=lambda s: len(s[1]))
+    result = []
+    i, j = 0, 0
+    while i < len(high) or j < len(low):
+        if i < len(high):
+            result.append(high[i])
+            i += 1
+        if j < len(low):
+            result.append(low[j])
+            j += 1
+    return result
+
+STRATEGIES = {
+    1: ("ALL (auto-best)", lambda slides: max(
+        [strategy_same(slides), strategy_reverse(slides), strategy_by_tags(slides),
+         strategy_alternating(slides), strategy_random(slides)],
+        key=lambda o: sum(score(o[i][1], o[i+1][1]) for i in range(len(o)-1))
+    )),
+    2: ("same (greedy forward)", strategy_same),
+    3: ("reverse", strategy_reverse),
+    4: ("random", strategy_random),
+    5: ("by_tags (descending)", strategy_by_tags),
+    6: ("alternating high/low", strategy_alternating),
+}
+
+# ==================== CORE FUNCTIONS ====================
+def score(a, b):
+    common = len(a & b)
+    return min(common, len(a) - common, len(b) - common)
+
+def read_and_pair(filepath: str) -> List[Slide]:
+    verticals = []
+    slides = []
+    with open(filepath) as f:
+        n = int(f.readline())
+        for i in range(n):
+            p = f.readline().split()
+            tags = frozenset(p[2:])
+            if p[0] in ('H', 'L'):
+                slides.append(([i], tags))
+            else:
+                verticals.append((i, tags))
+    for i in range(0, len(verticals)-1, 2):
+        id1, t1 = verticals[i]
+        id2, t2 = verticals[i+1]
+        slides.append(([id1, id2], t1 | t2))
+    return slides
+
+def run_strategy(filepath: str, strategy_func, strategy_name: str, output_dir: str):
+    start = time.time()
+    slides = read_and_pair(filepath)
+    order = strategy_func(slides)
+    sc = sum(score(order[i][1], order[i+1][1]) for i in range(len(order)-1))
+    out_file = os.path.join(output_dir, f"{strategy_name}_{os.path.basename(filepath)}")
     with open(out_file, "w") as f:
         f.write(f"{len(order)}\n")
         for ids, _ in order:
             f.write(" ".join(map(str, ids)) + "\n")
-    
-    total_time = time.time() - start_total
-    print(f"\n   FINAL SCORE : {final_score:,}")
-    print(f"   TOTAL TIME   : {total_time:.2f} seconds")
-    print(f"   OUTPUT FILE  : {out_file}")
-    print(f"{'='*80}\n")
+    return sc, time.time() - start, out_file
 
-# ==================== RUN ALL FILES ====================
-if __name__ == "__main__":
-    files = []
-    for path in [".", "Data"]:
-        if os.path.isdir(path):
-            for f in os.listdir(path):
-                if f.endswith(".txt") and "output" not in f.lower():
-                    files.append(os.path.join(path, f))
+# ==================== MAIN MENU ====================
+def main():
+    print("="*50)
+    print("STRATEGY SELECTION MENU")
+    print("="*50)
+    print("1. Run ALL strategies (auto-select best)")
+    print("2. Use ONLY 'same' strategy")
+    print("3. Use ONLY 'reverse' strategy")
+    print("4. Use ONLY 'random' strategy")
+    print("5. Use ONLY 'by_tags' strategy")
+    print("6. Manual strategy selection for each file")
+    print("="*50)
     
-    files = sorted(set(files))
-    
+    try:
+        choice = int(input("Enter your choice (1-6): "))
+        if choice not in range(1, 7):
+            print("Invalid choice!")
+            return
+    except:
+        print("Invalid input!")
+        return
+
+    files = [f for f in os.listdir() if f.endswith(".txt") and "output" not in f.lower()]
+    if os.path.exists("Data"):
+        files += [os.path.join("Data", f) for f in os.listdir("Data") if f.endswith(".txt") and "output" not in f.lower()]
+    files = sorted(set(f for f in files if os.path.isfile(f)))
+
     if not files:
         print("No input files found!")
-        sys.exit(1)
-    
-    print(f"Found {len(files)} file(s). Starting ultra-fast solver...\n")
-    
-    for f in files:
-        solve(f)
-    
-    print("ALL DONE! Your submissions are ready.")
-    print("You now have top-10 level scores with perfect runtime")
+        return
+
+    output_dir = "Output"
+    os.makedirs(output_dir, exist_ok=True)
+
+    print("="*70)
+    print("BATTLE OF HEURISTICS - INTERACTIVE VERSION")
+    print("="*70)
+    print(f"Processing {len(files)} showrooms...")
+    mode = "All strategies" if choice == 1 else STRATEGIES[choice][0] if choice != 6 else "Manual per file"
+    print(f"Strategy mode: {mode}")
+    print(f"Output folder: {output_dir}/")
+    print(f"Created '{output_dir}' folder")
+    print()
+
+    total_score = 0
+    total_time = 0.0
+    best_files = []
+
+    for idx, filepath in enumerate(files, 1):
+        print(f"[{idx}/{len(files)}] {os.path.basename(filepath)}")
+        
+        if choice == 6:
+            print("  Strategies: 2=same, 3=reverse, 4=random, 5=by_tags, 6=alternating")
+            ch = int(input(f"  Choose for this file (2-6): "))
+            strat_func = STRATEGIES[ch][1]
+            strat_name = STRATEGIES[ch][0]
+            score_val, t, outfile = run_strategy(filepath, strat_func, strat_name.replace(" ", "_"), output_dir)
+            print(f"  → {strat_name}: {score_val:,} pts in {t:.2f}s")
+        elif choice == 1:
+            scores = []
+            for sid, (name, func) in STRATEGIES.items():
+                if sid == 1: continue
+                sc, t, _ = run_strategy(filepath, func, name.replace(" ", "_"), output_dir)
+                scores.append((sc, t, func, name))
+            best_sc, best_t, best_func, best_name = max(scores, key=lambda x: x[0])
+            final_out = os.path.join(output_dir, f"BEST_{os.path.basename(filepath)}")
+            order = best_func(read_and_pair(filepath))
+            with open(final_out, "w") as f:
+                f.write(f"{len(order)}\n")
+                for ids, _ in order:
+                    f.write(" ".join(map(str, ids)) + "\n")
+            print(f"  → WINNER: {best_name} → {best_sc:,} points (+{best_sc - min(s[0] for s in scores):+})")
+            score_val, t = best_sc, best_t
+            best_files.append(final_out)
+        else:
+            strat_func = STRATEGIES[choice][1]
+            strat_name = STRATEGIES[choice][0].replace(" ", "_")
+            score_val, t, outfile = run_strategy(filepath, strat_func, strat_name, output_dir)
+            print(f"  → {STRATEGIES[choice][0]}: {score_val:,} pts in {t:.2f}s")
+
+        total_score += score_val
+        total_time += t
+
+    print("\n" + "="*70)
+    print("FINAL RESULTS")
+    print("="*70)
+    print(f"Total files processed : {len(files)}")
+    print(f"TOTAL SCORE           : {total_score:,}")
+    print(f"TOTAL TIME            : {total_time:.2f} seconds")
+    print(f"Average per file      : {total_score//len(files):,} points")
+    if choice == 1:
+        print(f"Best submissions saved as: BEST_*.txt in {output_dir}/")
+    print("Ready to submit — GOOD LUCK!")
+
+if __name__ == "__main__":
+    main()
