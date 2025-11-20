@@ -1,338 +1,196 @@
 #!/usr/bin/env python3
+import os, time, random
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections import defaultdict
 
-import sys
-import time
-import random
-import os
-from typing import List, Tuple, Set
-
-# -------------------------------------------------------------
-# Classes
-# -------------------------------------------------------------
-
+# --------------------------- Data Structures ---------------------------
 class Painting:
-    __slots__ = ('id', 'orientation', 'tags', 'tag_count')
-    def __init__(self, painting_id: int, orientation: str, tags: Set[str]):
-        self.id = painting_id
-        self.orientation = orientation
-        self.tags = tags
-        self.tag_count = len(tags)
+    __slots__ = ('id','orientation','tag_ids','tag_count')
+    def __init__(self,pid,ori,tag_ids):
+        self.id = pid
+        self.orientation = ori
+        self.tag_ids = tag_ids
+        self.tag_count = len(tag_ids)
 
-class Frameglass:
-    __slots__ = ('paintings', 'tags', 'tag_count')
-    def __init__(self, paintings: List[Painting]):
+class Frame:
+    __slots__ = ('paintings','tag_ids_set','tag_count')
+    def __init__(self,paintings):
         self.paintings = paintings
-        self.tags = set()
+        tag_ids = set()
         for p in paintings:
-            self.tags.update(p.tags)
-        self.tag_count = len(self.tags)
-    
-    def get_output_line(self) -> str:
-        return " ".join(str(p.id) for p in self.paintings)
+            tag_ids |= p.tag_ids
+        self.tag_ids_set = tag_ids
+        self.tag_count = len(tag_ids)
+    def get_line(self):
+        return ' '.join(str(p.id) for p in self.paintings)
 
-
-# -------------------------------------------------------------
-# Input Parsing
-# -------------------------------------------------------------
-
-def parse_input(filename: str) -> Tuple[List[Painting], List[Painting]]:
-    landscapes = []
-    portraits = []
-
-    with open(filename, 'r', encoding='utf-8') as f:
+# --------------------------- Input Parsing ---------------------------
+def parse_input(fname, tag2id):
+    with open(fname,'r') as f:
         n = int(f.readline().strip())
-        print(f"Parsing {n} paintings...")
-
-        for i in range(n):
-            line = f.readline().strip().split()
-            orientation = line[0]
-            num_tags = int(line[1])
-            tags = set(line[2:2+num_tags])
-            painting = Painting(i, orientation, tags)
-            if orientation == 'L':
-                landscapes.append(painting)
+        landscapes, portraits = [], []
+        for pid in range(n):
+            parts = f.readline().split()
+            ori = parts[0]
+            tags = parts[2:]
+            tag_ids = set()
+            for t in tags:
+                if t not in tag2id:
+                    tag2id[t] = len(tag2id)
+                tag_ids.add(tag2id[t])
+            p = Painting(pid, ori, tag_ids)
+            if ori=='L':
+                landscapes.append(p)
             else:
-                portraits.append(painting)
-
-    print(f"  Parsed: {len(landscapes)} landscapes, {len(portraits)} portraits")
+                portraits.append(p)
     return landscapes, portraits
 
+# --------------------------- Frame Creation ---------------------------
+def create_frames(landscapes, portraits):
+    frames = [Frame([p]) for p in landscapes]
+    portraits.sort(key=lambda p: p.tag_count)
+    i,j = 0,len(portraits)-1
+    while i<j:
+        frames.append(Frame([portraits[i], portraits[j]]))
+        i+=1
+        j-=1
+    if i==j:
+        frames.append(Frame([portraits[i]]))
+    return frames
 
-# -------------------------------------------------------------
-# Create Frameglasses
-# -------------------------------------------------------------
+# --------------------------- Scoring ---------------------------
+def local_score(f1,f2):
+    c = len(f1.tag_ids_set & f2.tag_ids_set)
+    o1 = f1.tag_count - c
+    o2 = f2.tag_count - c
+    return min(c,o1,o2)
 
-def create_frameglasses(landscapes: List[Painting], portraits: List[Painting]) -> List[Frameglass]:
-    frameglasses = []
-    
-    print("Creating frameglasses...")
-    
-    for painting in landscapes:
-        frameglasses.append(Frameglass([painting]))
+def total_score(frames):
+    score = 0
+    for i in range(len(frames)-1):
+        score += local_score(frames[i], frames[i+1])
+    return score
 
-    i = 0
-    while i < len(portraits):
-        if i + 1 < len(portraits):
-            frameglasses.append(Frameglass([portraits[i], portraits[i + 1]]))
-            i += 2
-        else:
-            frameglasses.append(Frameglass([portraits[i]]))
-            i += 1
+# --------------------------- Strategies ---------------------------
+def strat_same(frames): return frames[:]
+def strat_reverse(frames): return list(reversed(frames))
+def strat_random(frames):
+    arr = frames[:]
+    random.shuffle(arr)
+    return arr
+def strat_by_tags(frames): return sorted(frames, key=lambda f: f.tag_count)
 
-    print(f"  Created {len(frameglasses)} frameglasses")
-    return frameglasses
-
-
-# -------------------------------------------------------------
-# Score Calculations
-# -------------------------------------------------------------
-
-def calculate_local_score(fg1: Frameglass, fg2: Frameglass) -> int:
-    common = len(fg1.tags & fg2.tags)
-    only_first = len(fg1.tags - fg2.tags)
-    only_second = len(fg2.tags - fg1.tags)
-    return min(common, only_first, only_second)
-
-def calculate_total_score(frameglasses: List[Frameglass]) -> int:
-    total = 0
-    for i in range(len(frameglasses) - 1):
-        total += calculate_local_score(frameglasses[i], frameglasses[i + 1])
-    return total
-
-
-# -------------------------------------------------------------
-# Basic Strategies
-# -------------------------------------------------------------
-
-def order_same(frameglasses: List[Frameglass]) -> List[Frameglass]:
-    return frameglasses[:]
-
-def order_reverse(frameglasses: List[Frameglass]) -> List[Frameglass]:
-    return list(reversed(frameglasses))
-
-def order_random(frameglasses: List[Frameglass]) -> List[Frameglass]:
-    result = frameglasses[:]
-    random.shuffle(result)
-    return result
-
-def order_by_tag_count(frameglasses: List[Frameglass]) -> List[Frameglass]:
-    return sorted(frameglasses, key=lambda fg: -fg.tag_count)
-
-
-# -------------------------------------------------------------
-# Optimized Greedy Strategy (Trick #3 + Progress Bar)
-# -------------------------------------------------------------
-
-def order_greedy_similarity(frameglasses: List[Frameglass]) -> List[Frameglass]:
-    print("  Using 'greedy_similarity' optimized strategy with progress bar...")
-
-    remaining = frameglasses[:]
+# --------------------------- Candidate-limited Greedy ---------------------------
+def strat_greedy_fast(frames):
+    if not frames: return []
+    remaining = frames[:]
     result = []
 
-    total = len(remaining)
-    current = remaining.pop(0)
+    idx = max(range(len(remaining)), key=lambda i: remaining[i].tag_count)
+    current = remaining.pop(idx)
     result.append(current)
 
-    BATCH = 300
-    MIN_BATCH = 50
-    placed = 1
-
-    def show_progress(done, total):
-        bar_len = 40
-        filled = int(bar_len * done / total)
-        bar = "#" * filled + "-" * (bar_len - filled)
-        percent = (done / total) * 100
-        print(f"\r[{bar}] {percent:5.1f}%  ({done}/{total})", end="", flush=True)
-
-    show_progress(placed, total)
-
+    LIMIT_CANDIDATES = 1000
     while remaining:
-
-        if len(remaining) <= MIN_BATCH:
-            best_score, best_idx = -1, 0
-            for i, fg in enumerate(remaining):
-                s = calculate_local_score(current, fg)
-                if s > best_score:
-                    best_score, best_idx = s, i
-            nxt = remaining.pop(best_idx)
-            current = nxt
-            result.append(current)
-            placed += 1
-            show_progress(placed, total)
-            continue
-
-        remaining.sort(key=lambda fg: abs(fg.tag_count - current.tag_count))
-
-        best_score, best_idx = -1, 0
-        limit = min(BATCH, len(remaining))
-        for i in range(limit):
-            fg = remaining[i]
-            s = calculate_local_score(current, fg)
-            if s > best_score:
-                best_score = s
-                best_idx = i
-            if best_score >= 8:
-                break
-
-        nxt = remaining.pop(best_idx)
-        current = nxt
-        result.append(current)
-        placed += 1
-        show_progress(placed, total)
-
-    print("\n  Progress: Completed.")
+        sample = remaining[:LIMIT_CANDIDATES] if len(remaining)>LIMIT_CANDIDATES else remaining
+        next_frame = max(sample, key=lambda f: local_score(current,f))
+        remaining.remove(next_frame)
+        result.append(next_frame)
+        current = next_frame
     return result
 
+# --------------------------- Output ---------------------------
+def write_output(fname, frames):
+    os.makedirs('Output', exist_ok=True)
+    with open(f'Output/{fname}','w') as f:
+        f.write(str(len(frames))+'\n')
+        for fr in frames:
+            f.write(fr.get_line()+'\n')
 
-# -------------------------------------------------------------
-# Output
-# -------------------------------------------------------------
+# --------------------------- Process Single File ---------------------------
+def process_file_worker(args):
+    fname, strategy, tag2id = args
+    start = time.time()
+    landscapes, portraits = parse_input(fname, tag2id)
+    frames = create_frames(landscapes, portraits)
 
-def ensure_output_folder():
-    if not os.path.exists("Output"):
-        os.makedirs("Output")
-    return "Output"
-
-def get_output_path(input_file: str) -> str:
-    output_folder = ensure_output_folder()
-    input_filename = os.path.basename(input_file)
-    return os.path.join(output_folder, input_filename)
-
-def write_output(filename: str, frameglasses: List[Frameglass]):
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write(f"{len(frameglasses)}\n")
-        for fg in frameglasses:
-            f.write(f"{fg.get_output_line()}\n")
-    print(f"  Output written: {filename}")
-
-
-# -------------------------------------------------------------
-# Strategy Menus
-# -------------------------------------------------------------
-
-def get_strategy_choice() -> str:
-    print("\n" + "="*50)
-    print("STRATEGY SELECTION MENU")
-    print("="*50)
-    print("1. Run ALL strategies")
-    print("2. same")
-    print("3. reverse")
-    print("4. random")
-    print("5. by_tags")
-    print("6. greedy_similarity   <-- optimized")
-    print("="*50)
-    
-    while True:
-        choice = input("Enter your choice (1-6): ").strip()
-        if choice in ['1','2','3','4','5','6']:
-            return choice
-        print("Invalid choice")
-
-
-# -------------------------------------------------------------
-# Solve One File
-# -------------------------------------------------------------
-
-def solve_file_single_strategy(input_file: str, output_file: str, strategy_name: str) -> Tuple[int, float]:
-    print(f"\nProcessing: {input_file}")
-    print(f"Strategy: {strategy_name}")
-
-    start_time = time.time()
-
-    landscapes, portraits = parse_input(input_file)
-    frameglasses = create_frameglasses(landscapes, portraits)
-
-    strategies = {
-        "same": order_same,
-        "reverse": order_reverse,
-        "random": order_random,
-        "by_tags": order_by_tag_count,
-        "greedy_similarity": order_greedy_similarity,
+    strategies_dict = {
+        "same": strat_same,
+        "reverse": strat_reverse,
+        "random": strat_random,
+        "by_tags": strat_by_tags,
+        "greedy": strat_greedy_fast
     }
-    
-    ordered = strategies[strategy_name](frameglasses)
-    score = calculate_total_score(ordered)
 
-    write_output(output_file, ordered)
-
-    elapsed = time.time() - start_time
-    print(f"Score: {score:,}")
-    print(f"Time: {elapsed:.2f}s")
-
-    return score, elapsed
-
-
-# -------------------------------------------------------------
-# Solve All Showroom Files
-# -------------------------------------------------------------
-
-def solve_all_files():
-    files = [
-        ("0_example.txt", "0_example.txt"),
-        ("1_binary_landscapes.txt", "1_binary_landscapes.txt"),
-        ("10_computable_moments.txt", "10_computable_moments.txt"),
-        ("11_randomizing_paintings.txt", "11_randomizing_paintings.txt"),
-        ("110_oily_portraits.txt", "110_oily_portraits.txt")
-    ]
-
-    choice = get_strategy_choice()
-    strategies = ['same', 'reverse', 'random', 'by_tags', 'greedy_similarity']
-
-    total_score = 0
-    total_time = 0
-
-    for input_file, output_file in files:
-        if not os.path.exists(input_file):
-            print(f"Missing file: {input_file}")
-            continue
-
-        out_path = get_output_path(output_file)
-
-        if choice == '1':
-            # Run all and pick best
-            best_score = -1
-            file_time = 0
-            for sname in strategies:
-                score, t = solve_file_single_strategy(input_file, out_path, sname)
-                file_time += t
-                if score > best_score:
-                    best_score = score
-            total_score += best_score
-            total_time += file_time
-        else:
-            strategy = strategies[int(choice)-2]
-            score, elapsed = solve_file_single_strategy(input_file, out_path, strategy)
-            total_score += score
-            total_time += elapsed
-
-    # convert total_time to minutes and seconds
-    mins = int(total_time // 60)
-    secs = int(total_time % 60)
-
-    print("\n======= FINAL RESULTS =======")
-    print(f"Total Score: {total_score:,}")
-    print(f"Total Time: {mins} min {secs} sec")
-    print("=============================\n")
-
-
-# -------------------------------------------------------------
-# Main
-# -------------------------------------------------------------
-
-if __name__ == "__main__":
-    if len(sys.argv) == 1:
-        solve_all_files()
-    elif len(sys.argv) == 2:
-        input_file = sys.argv[1]
-        output_file = get_output_path(os.path.basename(input_file))
-        solve_file_single_strategy(input_file, output_file, "greedy_similarity")
-    elif len(sys.argv) == 3:
-        input_file = sys.argv[1]
-        strategy = sys.argv[2]
-        output_file = get_output_path(os.path.basename(input_file))
-        solve_file_single_strategy(input_file, output_file, strategy)
+    if strategy=="1":  # run all strategies
+        best_score = -1
+        best_result = None
+        for name,func in strategies_dict.items():
+            arr = func(frames)
+            sc = total_score(arr)
+            if sc>best_score:
+                best_score = sc
+                best_result = arr
+        write_output(fname,best_result)
+        elapsed = time.time()-start
+        return (fname,best_score,elapsed)
     else:
-        print("Usage:")
-        print("  python finalall.py")
-        print("  python finalall.py input.txt")
-        print("  python finalall.py input.txt strategy")
+        sname = {"2":"same","3":"reverse","4":"random","5":"by_tags","6":"greedy"}[strategy]
+        arr = strategies_dict[sname](frames)
+        sc = total_score(arr)
+        write_output(fname,arr)
+        elapsed = time.time()-start
+        return (fname,sc,elapsed)
+
+# --------------------------- Progress Bar ---------------------------
+def update_progress(completed,total,start,scores_times):
+    elapsed = time.time()-start
+    speed = completed/elapsed if elapsed>0 else 0.0001
+    remaining = (total-completed)/speed
+    percent = completed/total
+    bar_len = 40
+    filled = int(percent*bar_len)
+    bar = '█'*filled + '░'*(bar_len-filled)
+    spinner = ['|','/','-','\\']
+    spin = spinner[completed%4]
+    print(f"\r{spin} [{bar}] {percent*100:5.1f}% ({completed}/{total}) | Elapsed: {int(elapsed)}s | ETA: {int(remaining)}s | Speed: {speed:.2f} files/s",end='',flush=True)
+
+# --------------------------- Main ---------------------------
+def main():
+    input_files = sorted([f for f in os.listdir('.') if f.endswith('.txt')])
+    if not input_files:
+        print("No input files found.")
+        return
+
+    choice = input("\nStrategy Menu:\n1-Run ALL\n2-same\n3-reverse\n4-random\n5-by_tags\n6-greedy\nEnter choice (1-6): ").strip()
+    total_files = len(input_files)
+    tag2id = dict()
+    total_score_sum = 0
+    total_time_sum = 0
+    completed = 0
+    start_global = time.time()
+
+    args_list = [(f,choice,tag2id) for f in input_files]
+
+    scores_times = {}
+
+    with ProcessPoolExecutor() as executor:
+        futures = {executor.submit(process_file_worker,args): args[0] for args in args_list}
+        for future in as_completed(futures):
+            fname, score, t = future.result()
+            scores_times[fname] = (score,t)
+            completed += 1
+            update_progress(completed,total_files,start_global,scores_times)
+            print(f"\n  Finished {fname} | Score: {score} | Time: {t:.2f}s")
+
+    # Total summary
+    total_score_sum = sum(s for s,t in scores_times.values())
+    total_time_sum = sum(t for s,t in scores_times.values())
+    print("\n\n============== SUMMARY ==============")
+    print(f"Total files processed: {total_files}")
+    print(f"Total score: {total_score_sum:,}")
+    print(f"Total time: {total_time_sum:.2f}s")
+    print("=====================================")
+
+if __name__=="__main__":
+    main()
