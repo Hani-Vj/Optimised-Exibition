@@ -1,0 +1,12 @@
+  File "C:\Users\hanit\Downloads\BOH\naveen.py", line 315, in <module>
+    solve_all_files()
+    ~~~~~~~~~~~~~~~^^
+  File "C:\Users\hanit\Downloads\BOH\naveen.py", line 296, in solve_all_files
+    score, elapsed = solve_file_single_strategy(input_file, out_path, strategy)
+                     ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\hanit\Downloads\BOH\naveen.py", line 245, in solve_file_single_strategy
+    ordered = strategies[strategy_name](frameglasses)
+  File "C:\Users\hanit\Downloads\BOH\naveen.py", line 145, in order_greedy_ultrafast
+    fg.sig = build_signature(fg.tags, tag_to_bit)
+    ^^^^^^
+AttributeError: 'Frameglass' object has no attribute 'sig' and no __dict__ for setting new attributes
