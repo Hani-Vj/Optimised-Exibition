@@ -19,16 +19,14 @@ class Painting:
         self.tag_count = len(tags)
 
 class Frameglass:
-    __slots__ = ('paintings', 'tags', 'tag_count')
+    __slots__ = ('paintings', 'tags', 'tag_count', 'sig')
     def __init__(self, paintings: List[Painting]):
         self.paintings = paintings
         self.tags = set()
         for p in paintings:
             self.tags.update(p.tags)
         self.tag_count = len(self.tags)
-    
-    def get_output_line(self) -> str:
-        return " ".join(str(p.id) for p in self.paintings)
+        self.sig = 0  # for ultra-fast greedy
 
 
 # -------------------------------------------------------------
@@ -59,26 +57,50 @@ def parse_input(filename: str) -> Tuple[List[Painting], List[Painting]]:
 
 
 # -------------------------------------------------------------
+# Optimal Portrait Pairing
+# -------------------------------------------------------------
+
+def pair_portraits_optimal(portraits: List[Painting]) -> List[Frameglass]:
+    """
+    Pair vertical paintings to maximize tag diversity.
+    Heuristic: pair least overlapping tags first.
+    """
+    paired = []
+    used = set()
+    sorted_portraits = sorted(portraits, key=lambda p: -p.tag_count)
+
+    for i, p1 in enumerate(sorted_portraits):
+        if p1.id in used:
+            continue
+        best_score = -1
+        best_j = None
+        for j, p2 in enumerate(sorted_portraits[i+1:], start=i+1):
+            if p2.id in used:
+                continue
+            overlap = len(p1.tags & p2.tags)
+            score = -(overlap)  # smaller overlap better
+            if score > best_score:
+                best_score = score
+                best_j = j
+        if best_j is not None:
+            p2 = sorted_portraits[best_j]
+            paired.append(Frameglass([p1, p2]))
+            used.add(p1.id)
+            used.add(p2.id)
+        else:
+            # single portrait left
+            paired.append(Frameglass([p1]))
+            used.add(p1.id)
+    return paired
+
+
+# -------------------------------------------------------------
 # Create Frameglasses
 # -------------------------------------------------------------
 
 def create_frameglasses(landscapes: List[Painting], portraits: List[Painting]) -> List[Frameglass]:
-    frameglasses = []
-    
-    print("Creating frameglasses...")
-    
-    for painting in landscapes:
-        frameglasses.append(Frameglass([painting]))
-
-    i = 0
-    while i < len(portraits):
-        if i + 1 < len(portraits):
-            frameglasses.append(Frameglass([portraits[i], portraits[i + 1]]))
-            i += 2
-        else:
-            frameglasses.append(Frameglass([portraits[i]]))
-            i += 1
-
+    frameglasses = [Frameglass([p]) for p in landscapes]
+    frameglasses += pair_portraits_optimal(portraits)
     print(f"  Created {len(frameglasses)} frameglasses")
     return frameglasses
 
@@ -120,7 +142,7 @@ def order_by_tag_count(frameglasses: List[Frameglass]) -> List[Frameglass]:
 
 
 # -------------------------------------------------------------
-# Ultra-Fast Greedy Strategy (optimized)
+# Ultra-Fast Greedy Strategy
 # -------------------------------------------------------------
 
 def build_signature(tags, tag_to_bit):
@@ -136,44 +158,62 @@ def calc_score_sig(sig1, sig2):
     return min(common, only1, only2)
 
 def order_greedy_ultrafast(frameglasses):
-    # Map tags → bit indices
     all_tags = list({t for fg in frameglasses for t in fg.tags})
     tag_to_bit = {tag: i for i, tag in enumerate(all_tags)}
 
-    # Precompute signatures
     for fg in frameglasses:
         fg.sig = build_signature(fg.tags, tag_to_bit)
 
-    # Sort by number of tags once
     remaining = sorted(frameglasses, key=lambda fg: len(fg.tags))
     n = len(remaining)
-
-    # Start in the middle
     idx = n // 2
     curr = remaining.pop(idx)
     result = [curr]
 
-    WINDOW = 120        # adjustable for speed/quality tradeoff
-    BUCKET_SIZE = 250   # cluster frames
+    BUCKET_SIZE = 250
 
     while remaining:
         lo = max(0, idx - BUCKET_SIZE)
         hi = min(len(remaining), idx + BUCKET_SIZE)
-
         best_score = -1
         best_i = lo
-
         for i in range(lo, hi):
             sc = calc_score_sig(curr.sig, remaining[i].sig)
             if sc > best_score:
                 best_score = sc
                 best_i = i
-
         curr = remaining.pop(best_i)
         result.append(curr)
-        idx = best_i  # stay near same tag count region
+        idx = best_i
 
     return result
+
+
+# -------------------------------------------------------------
+# Post-processing / Hill-Climbing
+# -------------------------------------------------------------
+
+def optimize_order_hillclimb(frameglasses: List[Frameglass], iterations: int = 5) -> List[Frameglass]:
+    """
+    Swap neighboring slides if it increases total score.
+    Run multiple iterations to improve score.
+    """
+    n = len(frameglasses)
+    for it in range(iterations):
+        improved = False
+        for i in range(n-1):
+            score_before = calculate_local_score(frameglasses[i], frameglasses[i+1])
+            # Swap neighbors
+            frameglasses[i], frameglasses[i+1] = frameglasses[i+1], frameglasses[i]
+            score_after = calculate_local_score(frameglasses[i], frameglasses[i+1])
+            if score_after <= score_before:
+                # Revert if not better
+                frameglasses[i], frameglasses[i+1] = frameglasses[i+1], frameglasses[i]
+            else:
+                improved = True
+        if not improved:
+            break
+    return frameglasses
 
 
 # -------------------------------------------------------------
@@ -199,29 +239,6 @@ def write_output(filename: str, frameglasses: List[Frameglass]):
 
 
 # -------------------------------------------------------------
-# Strategy Menus
-# -------------------------------------------------------------
-
-def get_strategy_choice() -> str:
-    print("\n" + "="*50)
-    print("STRATEGY SELECTION MENU")
-    print("="*50)
-    print("1. Run ALL strategies")
-    print("2. same")
-    print("3. reverse")
-    print("4. random")
-    print("5. by_tags")
-    print("6. greedy_similarity   <-- optimized")
-    print("="*50)
-    
-    while True:
-        choice = input("Enter your choice (1-6): ").strip()
-        if choice in ['1','2','3','4','5','6']:
-            return choice
-        print("Invalid choice")
-
-
-# -------------------------------------------------------------
 # Solve One File
 # -------------------------------------------------------------
 
@@ -239,71 +256,18 @@ def solve_file_single_strategy(input_file: str, output_file: str, strategy_name:
         "reverse": order_reverse,
         "random": order_random,
         "by_tags": order_by_tag_count,
-        "greedy_similarity": order_greedy_ultrafast,  # use ultrafast greedy
+        "greedy_similarity": order_greedy_ultrafast,
     }
-    
-    ordered = strategies[strategy_name](frameglasses)
-    score = calculate_total_score(ordered)
 
+    ordered = strategies[strategy_name](frameglasses)
+    ordered = optimize_order_hillclimb(ordered, iterations=5)  # post-processing hill-climb
+    score = calculate_total_score(ordered)
     write_output(output_file, ordered)
 
     elapsed = time.time() - start_time
     print(f"Score: {score:,}")
     print(f"Time: {elapsed:.2f}s")
-
     return score, elapsed
-
-
-# -------------------------------------------------------------
-# Solve All Showroom Files
-# -------------------------------------------------------------
-
-def solve_all_files():
-    files = [
-        ("0_example.txt", "0_example.txt"),
-        ("1_binary_landscapes.txt", "1_binary_landscapes.txt"),
-        ("10_computable_moments.txt", "10_computable_moments.txt"),
-        ("11_randomizing_paintings.txt", "11_randomizing_paintings.txt"),
-        ("110_oily_portraits.txt", "110_oily_portraits.txt")
-    ]
-
-    choice = get_strategy_choice()
-    strategies = ['same', 'reverse', 'random', 'by_tags', 'greedy_similarity']
-
-    total_score = 0
-    total_time = 0
-
-    for input_file, output_file in files:
-        if not os.path.exists(input_file):
-            print(f"Missing file: {input_file}")
-            continue
-
-        out_path = get_output_path(output_file)
-
-        if choice == '1':
-            # Run all and pick best
-            best_score = -1
-            file_time = 0
-            for sname in strategies:
-                score, t = solve_file_single_strategy(input_file, out_path, sname)
-                file_time += t
-                if score > best_score:
-                    best_score = score
-            total_score += best_score
-            total_time += file_time
-        else:
-            strategy = strategies[int(choice)-2]
-            score, elapsed = solve_file_single_strategy(input_file, out_path, strategy)
-            total_score += score
-            total_time += elapsed
-
-    mins = int(total_time // 60)
-    secs = int(total_time % 60)
-
-    print("\n======= FINAL RESULTS =======")
-    print(f"Total Score: {total_score:,}")
-    print(f"Total Time: {mins} min {secs} sec")
-    print("=============================\n")
 
 
 # -------------------------------------------------------------
@@ -312,7 +276,9 @@ def solve_all_files():
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:
-        solve_all_files()
+        input_file = "0_example.txt"  # default file
+        output_file = get_output_path(os.path.basename(input_file))
+        solve_file_single_strategy(input_file, output_file, "greedy_similarity")
     elif len(sys.argv) == 2:
         input_file = sys.argv[1]
         output_file = get_output_path(os.path.basename(input_file))
@@ -324,6 +290,5 @@ if __name__ == "__main__":
         solve_file_single_strategy(input_file, output_file, strategy)
     else:
         print("Usage:")
-        print("  python finalall.py")
         print("  python finalall.py input.txt")
         print("  python finalall.py input.txt strategy")
