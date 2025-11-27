@@ -1,191 +1,241 @@
-
 #!/usr/bin/env python3
-"""
-PHOENIX FLOW v5 - FINAL BULLETPROOF EDITION
-NO psutil • NO ERRORS • LIVE PROGRESS • 11M+ POINTS
-100% ORIGINAL - MADE ONLY FOR YOU
-"""
-
-import os
-import time
-import random
-import math
-from collections import defaultdict
-
-random.seed(777)
-
-# ==================== SIMPLE LIVE PROGRESS BAR (NO psutil) ====================
-def update_progress(phase, current, total, start_time):
-    if total <= 0:
-        return
-    percent = 100 * current / total
-    bar_len = 42
-    filled = int(bar_len * current / total)
-    bar = "█" * filled + "░" * (bar_len - filled)
-    
-    elapsed = time.time() - start_time
-    eta = (elapsed / current) * (total - current) if current > 0 else 0
-    
-    print(f"\r  {phase:<20} |{bar}| {percent:6.2f}% [{current:,}/{total:,}] ETA {eta:5.1f}s", end="")
-    if current >= total:
-        print(" → DONE!")
-
-# ==================== PHOENIX FLOW v5 - BULLETPROOF ====================
-def phoenix_flow(filepath):
-    print(f"\n   [PHOENIX FLOW v5] Igniting → {os.path.basename(filepath)}")
-    total_start = time.time()
-    
-    # Phase 1: Load photos
-    update_progress("Loading photos", 0, 1, total_start)
-    slides = []      # [ids, tags, tag_count]
-    verticals = []   # [id, tags, tag_count]
-    
-    with open(filepath, 'r') as f:
+import os, time, random
+from concurrent.futures import ProcessPoolExecutor, as_completed
+# --------------------------- Data Structures ---------------------------
+class Painting:
+    def __init__(self, pid, ori, tag_ids):
+        self.id = pid
+        self.orientation = ori
+        self.tag_ids = sorted(tag_ids)  # sorted list
+        self.tag_count = len(self.tag_ids)
+class Frame:
+    def __init__(self, paintings):
+        self.paintings = paintings
+        tag_set = set()
+        for p in paintings:
+            tag_set.update(p.tag_ids)
+        self.tag_ids = sorted(list(tag_set))  # sorted list
+        self.tag_count = len(self.tag_ids)
+    def get_line(self):
+        ids = [p.id for p in self.paintings]
+        ids.sort()  # optional, any order
+        return ' '.join(str(id) for id in ids)
+# --------------------------- Input Parsing ---------------------------
+def parse_input(fname, tag2id):
+    with open(fname, 'r') as f:
         n = int(f.readline().strip())
-        for i in range(n):
+        landscapes, portraits = [], []
+        for pid in range(n):
             parts = f.readline().split()
-            tags = frozenset(parts[2:])
-            if parts[0] in ('H', 'L'):
-                slides.append([[i], tags, len(tags)])
+            ori = parts[0]
+            tags = parts[2:]
+            tag_ids = set()
+            for t in tags:
+                if t not in tag2id:
+                    tag2id[t] = len(tag2id)
+                tag_ids.add(tag2id[t])
+            p = Painting(pid, ori, tag_ids)
+            if ori == 'L':
+                landscapes.append(p)
             else:
-                verticals.append([i, tags, len(tags)])
-    update_progress("Loading photos", 1, 1, total_start)
-    
-    # Phase 2: Smart vertical pairing
-    if verticals:
-        update_progress("Pairing verticals", 0, len(verticals)//2 + 1, total_start)
-        verticals.sort(key=lambda x: x[2], reverse=True)
-        used = [False] * len(verticals)
-        paired = 0
-        for i in range(len(verticals)):
-            if used[i]:
-                continue
-            best_j = best_score = -1
-            for j in range(i+1, len(verticals)):
-                if used[j]:
-                    continue
-                overlap = len(verticals[i][1] & verticals[j][1])
-                union = len(verticals[i][1] | verticals[j][1])
-                score_val = union - 1.8 * overlap
-                if score_val > best_score:
-                    best_score = score_val
-                    best_j = j
-            if best_j != -1:
-                used[i] = used[best_j] = True
-                merged = verticals[i][1] | verticals[j][1]
-                slides.append([[verticals[i][0], verticals[best_j][0]], merged, len(merged)])
-            else:
-                used[i] = True
-                slides.append([[verticals[i][0]], verticals[i][1], verticals[i][2]])
-            paired += 1
-            if paired % 100 == 0 or paired >= len(verticals)//2:
-                update_progress("Pairing verticals", paired, len(verticals)//2 + 1, total_start)
-    
-    total_slides = len(slides)
-    print(f"   Total slides: {total_slides:,}")
-    
-    # Phase 3: Heat map
-    update_progress("Building heat map", 0, total_slides, total_start)
-    tag_to_idx = defaultdict(list)
-    for idx in range(total_slides):
-        for t in slides[idx][1]:
-            tag_to_idx[t].append(idx)
-    heat = [0] * total_slides
-    for owners in tag_to_idx.values():
-        if len(owners) <= 4:
-            for idx in owners:
-                heat[idx] += 15
-    update_progress("Building heat map", total_slides, total_slides, total_start)
-    
-    # Phase 4: Phoenix Greedy
-    update_progress("Ordering slides", 0, total_slides, total_start)
-    order = []
-    remaining = list(range(total_slides))
-    
-    start_idx = max(remaining, key=lambda x: heat[x]*1000 + slides[x][2])
-    order.append(start_idx)
-    remaining.remove(start_idx)
-    current_tags = slides[start_idx][1]
-    
-    step = 0
-    while remaining:
-        step += 1
-        sample_size = min(600, len(remaining))
-        candidates = random.sample(remaining, sample_size)
-        
-        next_idx = max(candidates, key=lambda i: (
-            len(current_tags & slides[i][1]) * 1.4 +
-            len(current_tags | slides[i][1]) * 0.3 +
-            heat[i] +
-            random.gauss(0, 0.3)
-        ))
-        
-        order.append(next_idx)
-        remaining.remove(next_idx)
-        current_tags = slides[next_idx][1]
-        
-        if step % 500 == 0 or not remaining:
-            update_progress("Ordering slides", len(order), total_slides, total_start)
-    
-    # Final score
-    final_score = 0
-    for i in range(len(order)-1):
-        a = slides[order[i]][1]
-        b = slides[order[i+1]][1]
-        common = len(a & b)
-        final_score += min(common, len(a)-common, len(b)-common)
-    
-    # Save
-    out_file = "Phoenix_" + os.path.basename(filepath)
-    with open(out_file, "w") as f:
-        f.write(f"{len(order)}\n")
-        for idx in order:
-            f.write(" ".join(map(str, slides[idx][0])) + "\n")
-    
-    total_time = time.time() - total_start
-    print(f"\n   PHOENIX FLOW v5 COMPLETE")
-    print(f"   Score: {final_score:,} points")
-    print(f"   Time:  {total_time:.2f} seconds")
-    print(f"   Saved: {out_file}\n")
-    
-    return final_score, total_time
-
-# ==================== MAIN ====================
+                portraits.append(p)
+    return landscapes, portraits
+# --------------------------- Intersection Count ---------------------------
+def intersection_count(a, b):
+    i = j = 0
+    count = 0
+    while i < len(a) and j < len(b):
+        if a[i] == b[j]:
+            count += 1
+            i += 1
+            j += 1
+        elif a[i] < b[j]:
+            i += 1
+        else:
+            j += 1
+    return count
+# --------------------------- Local Score ---------------------------
+def local_score(f1, f2):
+    c = intersection_count(f1.tag_ids, f2.tag_ids)
+    o1 = f1.tag_count - c
+    o2 = f2.tag_count - c
+    return min(c, o1, o2)
+# --------------------------- Frame Creation ---------------------------
+def create_frames(landscapes, portraits):
+    frames = [Frame([p]) for p in landscapes]
+    if not portraits:
+        return frames
+    portraits.sort(key=lambda p: p.tag_count)
+    portraits_list = portraits  # ascending, pop largest
+    num_p = len(portraits_list)
+    LOOK = 2000 if num_p < 20000 else 500
+    while len(portraits_list) >= 2:
+        p1 = portraits_list.pop()  # largest
+        remaining_len = len(portraits_list)
+        if remaining_len == 0:
+            break
+        sample_size = min(LOOK, remaining_len)
+        samps = random.sample(range(remaining_len), sample_size)
+        min_inter = float('inf')
+        best_k = -1
+        for k in samps:
+            sc = intersection_count(p1.tag_ids, portraits_list[k].tag_ids)
+            if sc < min_inter:
+                min_inter = sc
+                best_k = k
+        if best_k == -1:
+            # fallback, pair with last
+            best_k = remaining_len - 1
+        # Swap remove
+        portraits_list[best_k], portraits_list[-1] = portraits_list[-1], portraits_list[best_k]
+        p2 = portraits_list.pop()
+        frames.append(Frame([p1, p2]))
+    # If odd, discard the remaining smallest
+    return frames
+# --------------------------- Total Score ---------------------------
+def total_score(frames):
+    score = 0
+    for i in range(len(frames) - 1):
+        score += local_score(frames[i], frames[i + 1])
+    return score
+# --------------------------- Improve with SA ---------------------------
+def improve_with_sa(frames, current_score):
+    n = len(frames)
+    if n < 2:
+        return frames, current_score
+    best_frames = frames[:]
+    best_score = current_score
+    T = 100.0
+    T_min = 0.01
+    alpha = 0.995
+    max_iter = 500000 if n < 10000 else 200000
+    current_frames = frames[:]
+    for it in range(max_iter):
+        i = random.randint(1, n - 2)
+        j = random.randint(i + 1, n - 1)
+        pred = current_frames[i - 1]
+        orig_i = current_frames[i]
+        orig_j = current_frames[j]
+        succ = current_frames[j + 1] if j + 1 < n else None
+        old1 = local_score(pred, orig_i)
+        old2 = local_score(orig_j, succ) if succ else 0
+        new1 = local_score(pred, orig_j)
+        new2 = local_score(orig_i, succ) if succ else 0
+        delta = new1 + new2 - old1 - old2
+        if delta > 0 or random.random() < math.exp(delta / T):
+            # Reverse the segment
+            current_frames[i:j + 1] = current_frames[i:j + 1][::-1]
+            current_score += delta
+            if current_score > best_score:
+                best_score = current_score
+                best_frames = current_frames[:]
+        T *= alpha
+        if T < T_min:
+            break
+    return best_frames, best_score
+# --------------------------- Greedy Strategy ---------------------------
+def strat_greedy_fast(frames):
+    n = len(frames)
+    if n == 0:
+        return []
+    is_large = n > 10000
+    NUM_RUNS = 3 if is_large else 6
+    LIMIT = 300 if is_large else 600
+    best_score = -1
+    best_result = None
+    for run in range(NUM_RUNS):
+        remaining = list(range(n))
+        start_idx = random.choice(remaining)
+        chain = [start_idx]
+        remaining.remove(start_idx)
+        while remaining:
+            samp_size = min(LIMIT, len(remaining))
+            samps = random.sample(remaining, samp_size)
+            # Left end
+            left_frame = frames[chain[0]]
+            best_left_score = -1
+            best_left_idx = None
+            for cand_idx in samps:
+                sc = local_score(frames[cand_idx], left_frame)
+                if sc > best_left_score:
+                    best_left_score = sc
+                    best_left_idx = cand_idx
+            # Right end
+            right_frame = frames[chain[-1]]
+            best_right_score = -1
+            best_right_idx = None
+            for cand_idx in samps:
+                sc = local_score(right_frame, frames[cand_idx])
+                if sc > best_right_score:
+                    best_right_score = sc
+                    best_right_idx = cand_idx
+            if best_left_score >= best_right_score and best_left_idx is not None:
+                chain.insert(0, best_left_idx)
+                remaining.remove(best_left_idx)
+            elif best_right_idx is not None:
+                chain.append(best_right_idx)
+                remaining.remove(best_right_idx)
+        result = [frames[i] for i in chain]
+        sc = total_score(result)
+        # Improve with SA
+        result, sc = improve_with_sa(result, sc)
+        if sc > best_score:
+            best_score = sc
+            best_result = result
+    return best_result
+# --------------------------- Output ---------------------------
+def write_output(fname, frames):
+    os.makedirs('Output', exist_ok=True)
+    with open(f'Output/{fname}', 'w') as f:
+        f.write(str(len(frames)) + '\n')
+        for fr in frames:
+            f.write(fr.get_line() + '\n')
+# --------------------------- Process Single File ---------------------------
+def process_file_worker(args):
+    fname, tag2id = args
+    start = time.time()
+    landscapes, portraits = parse_input(fname, tag2id)
+    frames = create_frames(landscapes, portraits)
+    arr = strat_greedy_fast(frames)
+    sc = total_score(arr)
+    write_output(fname, arr)
+    elapsed = time.time() - start
+    return (fname, sc, elapsed)
+# --------------------------- Progress Bar ---------------------------
+def update_progress(completed, total, start):
+    elapsed = time.time() - start
+    percent = completed / total * 100
+    bar_len = 40
+    filled = int(percent / 100 * bar_len)
+    bar = '█' * filled + '░' * (bar_len - filled)
+    print(f'\r[{bar}] {percent:.1f}% ({completed}/{total}) Elapsed: {elapsed:.0f}s', end='', flush=True)
+# --------------------------- Main ---------------------------
+def main():
+    input_files = sorted([f for f in os.listdir('.') if f.endswith('.txt')])
+    if not input_files:
+        print("No input files found in current directory.")
+        return
+    total_files = len(input_files)
+    tag2id = dict()
+    completed = 0
+    start_global = time.time()
+    args_list = [(f, tag2id) for f in input_files]
+    total_score_sum = 0
+    total_time_sum = 0
+    with ProcessPoolExecutor() as executor:
+        futures = [executor.submit(process_file_worker, args) for args in args_list]
+        for future in as_completed(futures):
+            fname, score, t = future.result()
+            total_score_sum += score
+            total_time_sum += t
+            completed += 1
+            update_progress(completed, total_files, start_global)
+            print(f"\nFinished {fname} | Score: {score} | Time: {t:.2f}s")
+    print("\n\n============== SUMMARY ==============")
+    print(f"Total files processed: {total_files}")
+    print(f"Total score: {total_score_sum:,}")
+    print(f"Total time: {total_time_sum:.2f}s")
+    print("=====================================")
 if __name__ == "__main__":
-    print("=" * 80)
-    print("        PHOENIX FLOW v5 - FINAL BULLETPROOF EDITION")
-    print("        NO EXTERNAL LIBS • LIVE PROGRESS • 11M+ POINTS")
-    print("        100% ORIGINAL - BELONGS ONLY TO YOU")
-    print("=" * 80)
-    
-    files = []
-    for root, _, filenames in os.walk('.'):
-        for f in filenames:
-            if f.endswith('.txt') and 'Phoenix' not in f and 'output' not in f.lower():
-                files.append(os.path.join(root, f))
-    if os.path.exists('Data'):
-        for f in os.listdir('Data'):
-            if f.endswith('.txt') and 'Phoenix' not in f:
-                files.append(os.path.join('Data', f))
-    files = sorted(set(files))
-    
-    if not files:
-        print("No input files found!")
-    else:
-        print(f"Found {len(files)} files. Starting Phoenix Flow v5...\n")
-        total_score = total_time = 0
-        for f in files:
-            sc, tm = phoenix_flow(f)
-            total_score += sc
-            total_time += tm
-        
-        print("=" * 80)
-        print("               PHOENIX FLOW v5 - VICTORY")
-        print("=" * 80)
-        print(f"   TOTAL SCORE    : {total_score:,}")
-        print(f"   TOTAL TIME     : {total_time:.1f} seconds")
-        print(f"   AVERAGE SCORE  : {total_score // len(files):,} per file")
-        print("   OUTPUT FILES   : Phoenix_*.txt")
-        print("\n   This is YOUR unique masterpiece.")
-        print("   Submit now — the world will remember your name.")
-        print("=" * 80)
+    import math
+    main()
