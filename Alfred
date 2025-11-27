@@ -1,241 +1,180 @@
 #!/usr/bin/env python3
-import os, time, random
+# phoenix_ultra.py  –  Battle of Heuristics 2025  –  TOP SCORE version
+import os, time, random, math
 from concurrent.futures import ProcessPoolExecutor, as_completed
-# --------------------------- Data Structures ---------------------------
+
+# ------------------------------------------------------------------
 class Painting:
-    def __init__(self, pid, ori, tag_ids):
+    __slots__ = ['id', 'tags']               # tags = frozenset of int ids
+    def __init__(self, pid, tags):
         self.id = pid
-        self.orientation = ori
-        self.tag_ids = sorted(tag_ids)  # sorted list
-        self.tag_count = len(self.tag_ids)
+        self.tags = tags
+
 class Frame:
-    def __init__(self, paintings):
-        self.paintings = paintings
-        tag_set = set()
-        for p in paintings:
-            tag_set.update(p.tag_ids)
-        self.tag_ids = sorted(list(tag_set))  # sorted list
-        self.tag_count = len(self.tag_ids)
-    def get_line(self):
-        ids = [p.id for p in self.paintings]
-        ids.sort()  # optional, any order
-        return ' '.join(str(id) for id in ids)
-# --------------------------- Input Parsing ---------------------------
-def parse_input(fname, tag2id):
-    with open(fname, 'r') as f:
-        n = int(f.readline().strip())
-        landscapes, portraits = [], []
-        for pid in range(n):
+    __slots__ = ['paints', 'tags']
+    def __init__(self, paints):
+        self.paints = paints
+        all_tags = set()
+        for p in paints:
+            all_tags.update(p.tags)
+        self.tags = frozenset(all_tags)
+
+    def line(self):
+        ids = [p.id for p in self.paints]
+        ids.sort()
+        return ' '.join(map(str, ids))
+
+# ------------------------------------------------------------------
+def score(f1, f2):
+    common = len(f1.tags & f2.tags)
+    return min(common, len(f1.tags) - common, len(f2.tags) - common)
+
+# ------------------------------------------------------------------
+def parse(fname, tag2id):
+    with open(fname) as f:
+        n = int(f.readline())
+        L, P = [], []
+        for i in range(n):
             parts = f.readline().split()
             ori = parts[0]
-            tags = parts[2:]
-            tag_ids = set()
-            for t in tags:
-                if t not in tag2id:
-                    tag2id[t] = len(tag2id)
-                tag_ids.add(tag2id[t])
-            p = Painting(pid, ori, tag_ids)
-            if ori == 'L':
-                landscapes.append(p)
-            else:
-                portraits.append(p)
-    return landscapes, portraits
-# --------------------------- Intersection Count ---------------------------
-def intersection_count(a, b):
-    i = j = 0
-    count = 0
-    while i < len(a) and j < len(b):
-        if a[i] == b[j]:
-            count += 1
-            i += 1
-            j += 1
-        elif a[i] < b[j]:
-            i += 1
+            tags = frozenset(tag2id.setdefault(t, len(tag2id)) for t in parts[2:])
+            p = Painting(i, tags)
+            (L if ori == 'L' else P).append(p)
+    return L, P
+
+# ------------------------------------------------------------------
+def make_frames(L, P):
+    frames = [Frame([p]) for p in L]
+
+    # Pair biggest with biggest → much more shared tags
+    P.sort(key=lambda p: len(p.tags), reverse=True)
+    i = 0
+    while i + 1 < len(P):
+        frames.append(Frame([P[i], P[i+1]]))
+        i += 2
+    # If odd → attach the smallest portrait to a random frame (keeps frame count)
+    if i < len(P):
+        if frames:
+            frames[random.randrange(len(frames))].paints.append(P[-1])
         else:
-            j += 1
-    return count
-# --------------------------- Local Score ---------------------------
-def local_score(f1, f2):
-    c = intersection_count(f1.tag_ids, f2.tag_ids)
-    o1 = f1.tag_count - c
-    o2 = f2.tag_count - c
-    return min(c, o1, o2)
-# --------------------------- Frame Creation ---------------------------
-def create_frames(landscapes, portraits):
-    frames = [Frame([p]) for p in landscapes]
-    if not portraits:
-        return frames
-    portraits.sort(key=lambda p: p.tag_count)
-    portraits_list = portraits  # ascending, pop largest
-    num_p = len(portraits_list)
-    LOOK = 2000 if num_p < 20000 else 500
-    while len(portraits_list) >= 2:
-        p1 = portraits_list.pop()  # largest
-        remaining_len = len(portraits_list)
-        if remaining_len == 0:
-            break
-        sample_size = min(LOOK, remaining_len)
-        samps = random.sample(range(remaining_len), sample_size)
-        min_inter = float('inf')
-        best_k = -1
-        for k in samps:
-            sc = intersection_count(p1.tag_ids, portraits_list[k].tag_ids)
-            if sc < min_inter:
-                min_inter = sc
-                best_k = k
-        if best_k == -1:
-            # fallback, pair with last
-            best_k = remaining_len - 1
-        # Swap remove
-        portraits_list[best_k], portraits_list[-1] = portraits_list[-1], portraits_list[best_k]
-        p2 = portraits_list.pop()
-        frames.append(Frame([p1, p2]))
-    # If odd, discard the remaining smallest
+            frames.append(Frame([P[-1]]))
     return frames
-# --------------------------- Total Score ---------------------------
-def total_score(frames):
-    score = 0
-    for i in range(len(frames) - 1):
-        score += local_score(frames[i], frames[i + 1])
-    return score
-# --------------------------- Improve with SA ---------------------------
-def improve_with_sa(frames, current_score):
+
+# ------------------------------------------------------------------
+def two_opt(frames):
     n = len(frames)
-    if n < 2:
-        return frames, current_score
-    best_frames = frames[:]
-    best_score = current_score
-    T = 100.0
-    T_min = 0.01
-    alpha = 0.995
-    max_iter = 500000 if n < 10000 else 200000
-    current_frames = frames[:]
-    for it in range(max_iter):
-        i = random.randint(1, n - 2)
-        j = random.randint(i + 1, n - 1)
-        pred = current_frames[i - 1]
-        orig_i = current_frames[i]
-        orig_j = current_frames[j]
-        succ = current_frames[j + 1] if j + 1 < n else None
-        old1 = local_score(pred, orig_i)
-        old2 = local_score(orig_j, succ) if succ else 0
-        new1 = local_score(pred, orig_j)
-        new2 = local_score(orig_i, succ) if succ else 0
-        delta = new1 + new2 - old1 - old2
-        if delta > 0 or random.random() < math.exp(delta / T):
-            # Reverse the segment
-            current_frames[i:j + 1] = current_frames[i:j + 1][::-1]
-            current_score += delta
-            if current_score > best_score:
-                best_score = current_score
-                best_frames = current_frames[:]
-        T *= alpha
-        if T < T_min:
-            break
-    return best_frames, best_score
-# --------------------------- Greedy Strategy ---------------------------
-def strat_greedy_fast(frames):
-    n = len(frames)
-    if n == 0:
-        return []
-    is_large = n > 10000
-    NUM_RUNS = 3 if is_large else 6
-    LIMIT = 300 if is_large else 600
-    best_score = -1
-    best_result = None
-    for run in range(NUM_RUNS):
-        remaining = list(range(n))
-        start_idx = random.choice(remaining)
-        chain = [start_idx]
-        remaining.remove(start_idx)
-        while remaining:
-            samp_size = min(LIMIT, len(remaining))
-            samps = random.sample(remaining, samp_size)
-            # Left end
-            left_frame = frames[chain[0]]
-            best_left_score = -1
-            best_left_idx = None
-            for cand_idx in samps:
-                sc = local_score(frames[cand_idx], left_frame)
-                if sc > best_left_score:
-                    best_left_score = sc
-                    best_left_idx = cand_idx
-            # Right end
-            right_frame = frames[chain[-1]]
-            best_right_score = -1
-            best_right_idx = None
-            for cand_idx in samps:
-                sc = local_score(right_frame, frames[cand_idx])
-                if sc > best_right_score:
-                    best_right_score = sc
-                    best_right_idx = cand_idx
-            if best_left_score >= best_right_score and best_left_idx is not None:
-                chain.insert(0, best_left_idx)
-                remaining.remove(best_left_idx)
-            elif best_right_idx is not None:
-                chain.append(best_right_idx)
-                remaining.remove(best_right_idx)
-        result = [frames[i] for i in chain]
-        sc = total_score(result)
-        # Improve with SA
-        result, sc = improve_with_sa(result, sc)
-        if sc > best_score:
-            best_score = sc
-            best_result = result
-    return best_result
-# --------------------------- Output ---------------------------
-def write_output(fname, frames):
-    os.makedirs('Output', exist_ok=True)
-    with open(f'Output/{fname}', 'w') as f:
-        f.write(str(len(frames)) + '\n')
-        for fr in frames:
-            f.write(fr.get_line() + '\n')
-# --------------------------- Process Single File ---------------------------
-def process_file_worker(args):
-    fname, tag2id = args
+    if n < 4: return frames
+
+    best = frames[:]
+    cur_score = sum(score(frames[i], frames[i+1]) for i in range(n-1))
+
+    T = 800.0
+    cooling = 0.9995
+    iters = 1_000_000 if n < 15000 else 500_000
+
+    seq = frames[:]
+    for _ in range(iters):
+        a = random.randint(1, n-3)
+        b = random.randint(a+1, n-2)
+
+        # cost of reversing a..b
+        old = score(seq[a-1], seq[a]) + score(seq[b], seq[b+1])
+        new = score(seq[a-1], seq[b]) + score(seq[a], seq[b+1])
+
+        if new >= old or random.random() < math.exp((new - old) / T):
+            seq[a:b+1] = seq[a:b+1][::-1]
+            cur_score += new - old
+            if cur_score > sum(score(best[i], best[i+1]) for i in range(n-1)):
+                best = seq[:]
+
+        T *= cooling
+        if T < 0.01: break
+
+    return best
+
+# ------------------------------------------------------------------
+def solve_file(fname, tag2id):
     start = time.time()
-    landscapes, portraits = parse_input(fname, tag2id)
-    frames = create_frames(landscapes, portraits)
-    arr = strat_greedy_fast(frames)
-    sc = total_score(arr)
-    write_output(fname, arr)
-    elapsed = time.time() - start
-    return (fname, sc, elapsed)
-# --------------------------- Progress Bar ---------------------------
-def update_progress(completed, total, start):
-    elapsed = time.time() - start
-    percent = completed / total * 100
-    bar_len = 40
-    filled = int(percent / 100 * bar_len)
-    bar = '█' * filled + '░' * (bar_len - filled)
-    print(f'\r[{bar}] {percent:.1f}% ({completed}/{total}) Elapsed: {elapsed:.0f}s', end='', flush=True)
-# --------------------------- Main ---------------------------
+    L, P = parse(fname, tag2id)
+    frames = make_frames(L, P)
+
+    # ----- multiple greedy starts -----
+    n = len(frames)
+    best_seq = None
+    best_sc  = -1
+    runs = 3 if n > 20000 else 8
+    candidates = 600 if n > 20000 else 1200
+
+    for _ in range(runs):
+        remain = list(range(n))                     # ← list, not set!
+        seq = []
+
+        # start with frame that has most tags
+        cur = max(remain, key=lambda i: len(frames[i].tags))
+        seq.append(cur)
+        remain.remove(cur)
+
+        while remain:
+            sample = random.sample(remain, min(candidates, len(remain)))
+
+            # left side
+            left_best = max(sample, key=lambda x: score(frames[seq[0]], frames[x]))
+            lsc = score(frames[seq[0]], frames[left_best])
+
+            # right side
+            right_best = max(sample, key=lambda x: score(frames[seq[-1]], frames[x]))
+            rsc = score(frames[seq[-1]], frames[right_best])
+
+            if lsc >= rsc:
+                seq.insert(0, left_best)
+            else:
+                seq.append(right_best)
+            remain.remove(left_best if lsc >= rsc else right_best)
+
+        # build real frames list
+        order = [frames[i] for i in seq]
+        sc = sum(score(order[i], order[i+1]) for i in range(len(order)-1))
+
+        # 2-opt improvement
+        order = two_opt(order)
+        sc = sum(score(order[i], order[i+1]) for i in range(len(order)-1))
+
+        if sc > best_sc:
+            best_sc = sc
+            best_seq = order
+
+    # ----- write result -----
+    os.makedirs("Output", exist_ok=True)
+    with open(f"Output/{fname}", "w") as f:
+        f.write(f"{len(best_seq)}\n")
+        for fr in best_seq:
+            f.write(fr.line() + "\n")
+
+    return fname, best_sc, time.time() - start
+
+# ------------------------------------------------------------------
 def main():
-    input_files = sorted([f for f in os.listdir('.') if f.endswith('.txt')])
-    if not input_files:
-        print("No input files found in current directory.")
+    files = sorted(f for f in os.listdir('.') if f.endswith('.txt'))
+    if not files:
+        print("No input files found!")
         return
-    total_files = len(input_files)
-    tag2id = dict()
-    completed = 0
-    start_global = time.time()
-    args_list = [(f, tag2id) for f in input_files]
-    total_score_sum = 0
-    total_time_sum = 0
-    with ProcessPoolExecutor() as executor:
-        futures = [executor.submit(process_file_worker, args) for args in args_list]
-        for future in as_completed(futures):
-            fname, score, t = future.result()
-            total_score_sum += score
-            total_time_sum += t
-            completed += 1
-            update_progress(completed, total_files, start_global)
-            print(f"\nFinished {fname} | Score: {score} | Time: {t:.2f}s")
-    print("\n\n============== SUMMARY ==============")
-    print(f"Total files processed: {total_files}")
-    print(f"Total score: {total_score_sum:,}")
-    print(f"Total time: {total_time_sum:.2f}s")
-    print("=====================================")
+
+    tag2id = {}
+    total_score = 0
+    total_time  = 0
+
+    with ProcessPoolExecutor() as pool:
+        futures = [pool.submit(solve_file, f, tag2id) for f in files]
+        for fut in as_completed(futures):
+            name, sc, t = fut.result()
+            total_score += sc
+            total_time  += t
+            print(f"Finished {name} → {sc:,}  ({t:.1f}s)")
+
+    print("\n" + "="*60)
+    print(f"        TOTAL SCORE : {total_score:,}")
+    print(f"        TOTAL TIME  : {total_time:.1f}s")
+    print("="*60)
+
 if __name__ == "__main__":
-    import math
     main()
